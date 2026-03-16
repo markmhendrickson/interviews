@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 38 22% 98%;
+    --foreground: 28 22% 18%;
+    --card: 35 20% 96%;
+    --card-foreground: 28 22% 18%;
+    --popover: 38 22% 98%;
+    --popover-foreground: 28 22% 18%;
+    --primary: 12 48% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 35 18% 94%;
+    --secondary-foreground: 28 22% 18%;
+    --muted: 35 18% 94%;
+    --muted-foreground: 28 14% 44%;
+    --accent: 35 18% 92%;
+    --accent-foreground: 28 22% 18%;
+    --border: 32 18% 88%;
+    --input: 32 18% 88%;
+    --ring: 12 48% 38%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 95%;
+    --card: 217 33% 18%;
+    --card-foreground: 210 40% 95%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 95%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 25%;
+    --secondary-foreground: 210 40% 95%;
+    --muted: 217 33% 25%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 25%;
+    --accent-foreground: 210 40% 95%;
+    --border: 217 33% 25%;
+    --input: 217 33% 25%;
+    --ring: 217 91% 60%;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  code, pre, .font-mono {
+    font-family: "JetBrains Mono", "Fira Code", "Roboto Mono", "Courier New", monospace;
+  }
+}
+
+@layer utilities {
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}

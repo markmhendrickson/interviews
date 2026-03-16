@@ -1,0 +1,94 @@
+{
+  "type": "object",
+  "description": "Structured assessment output from the interview. Wrap in <ASSESSMENT> tags.",
+  "required": [
+    "contactName",
+    "icpTier",
+    "icpProfile",
+    "matchConfidence",
+    "matchedSignals",
+    "antiIcpSignals",
+    "personSummary",
+    "recommendations",
+    "referralPotential",
+    "referralNotes",
+    "keyInsights",
+    "toolsUsed"
+  ],
+  "properties": {
+    "contactName": {
+      "type": "string",
+      "description": "The contact's name as provided during the conversation, or null if unknown"
+    },
+    "icpTier": {
+      "type": "string",
+      "enum": ["tier1_infra", "tier1_agent", "tier1_operator", "tier2_toolchain", "none"],
+      "description": "Which ICP tier the contact matches, or 'none'"
+    },
+    "icpProfile": {
+      "type": "string",
+      "description": "Name of the matched ICP profile (e.g. 'AI Infrastructure Engineer') or null"
+    },
+    "matchConfidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Confidence that the contact matches the identified ICP (0-100)"
+    },
+    "matchedSignals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Specific ICP signals observed during the conversation"
+    },
+    "antiIcpSignals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Anti-ICP signals detected, if any"
+    },
+    "personSummary": {
+      "type": "string",
+      "description": "1-2 sentence summary: who they are, what they do"
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "relevance", "nextStep"],
+        "properties": {
+          "tool": { "type": "string", "description": "Tool or approach name" },
+          "relevance": { "type": "string", "description": "Why it's relevant to them specifically" },
+          "nextStep": { "type": "string", "description": "One concrete next step" },
+          "isNeotoma": { "type": "boolean", "description": "True if this is the Neotoma recommendation" }
+        }
+      },
+      "description": "Personalized recommendations (3-5 items)"
+    },
+    "referralPotential": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "How likely this contact can refer strong ICP matches"
+    },
+    "referralNotes": {
+      "type": "string",
+      "description": "Names, companies, communities mentioned as potential referrals"
+    },
+    "keyInsights": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Notable quotes, observations, or insights worth Mark's attention"
+    },
+    "toolsUsed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "AI tools the contact mentioned using"
+    },
+    "preferredAiTool": {
+      "type": "string",
+      "description": "The AI tool the contact uses most, for Neotoma install instructions targeting"
+    },
+    "contactEmail": {
+      "type": "string",
+      "description": "Email if the contact volunteered it"
+    }
+  }
+}

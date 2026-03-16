@@ -1,0 +1,157 @@
+{
+  "memory_state": [
+    {
+      "name": "Neotoma",
+      "category": "Deterministic state layer",
+      "description": "Persistent, versioned, replayable state for AI agents. Schema-bound, append-only, no silent mutation.",
+      "url": "https://neotoma.io",
+      "forIcpOnly": true
+    },
+    {
+      "name": "Mem0",
+      "category": "Lightweight memory",
+      "description": "Simple memory layer for LLM apps. Good for basic personalization without infrastructure concerns.",
+      "url": "https://mem0.ai"
+    },
+    {
+      "name": "Zep",
+      "category": "Conversation memory",
+      "description": "Long-term memory for AI assistants. Focuses on chat history and user context.",
+      "url": "https://www.getzep.com"
+    },
+    {
+      "name": "LangChain/LangGraph Memory",
+      "category": "Framework memory",
+      "description": "Built-in memory modules for LangChain and LangGraph agent frameworks.",
+      "url": "https://python.langchain.com"
+    }
+  ],
+  "development": [
+    {
+      "name": "Cursor",
+      "category": "AI code editor",
+      "description": "AI-first code editor built on VS Code. Deep codebase understanding and multi-file editing.",
+      "url": "https://cursor.sh"
+    },
+    {
+      "name": "Claude Code",
+      "category": "CLI agent",
+      "description": "Anthropic's CLI coding agent. Terminal-native, works across your full project.",
+      "url": "https://docs.anthropic.com/en/docs/claude-code"
+    },
+    {
+      "name": "GitHub Copilot",
+      "category": "Code completion",
+      "description": "AI pair programmer integrated into VS Code, JetBrains, and more.",
+      "url": "https://github.com/features/copilot"
+    },
+    {
+      "name": "Windsurf",
+      "category": "AI code editor",
+      "description": "AI-powered code editor with deep project context and agentic capabilities.",
+      "url": "https://codeium.com/windsurf"
+    },
+    {
+      "name": "Replit Agent",
+      "category": "Cloud development",
+      "description": "AI agent that builds and deploys full apps from natural language in the browser.",
+      "url": "https://replit.com"
+    },
+    {
+      "name": "v0",
+      "category": "UI generation",
+      "description": "Vercel's AI tool for generating React UI components from prompts.",
+      "url": "https://v0.dev"
+    }
+  ],
+  "productivity": [
+    {
+      "name": "Claude",
+      "category": "AI assistant",
+      "description": "Anthropic's AI assistant. Projects feature for persistent context. Strong reasoning.",
+      "url": "https://claude.ai"
+    },
+    {
+      "name": "ChatGPT",
+      "category": "AI assistant",
+      "description": "OpenAI's AI assistant with custom GPTs and memory features.",
+      "url": "https://chat.openai.com"
+    },
+    {
+      "name": "Perplexity",
+      "category": "AI research",
+      "description": "AI-powered research tool with real-time web search and citations.",
+      "url": "https://perplexity.ai"
+    },
+    {
+      "name": "Notion AI",
+      "category": "Workspace AI",
+      "description": "AI features built into Notion for writing, summarizing, and organizing.",
+      "url": "https://notion.so"
+    },
+    {
+      "name": "Granola",
+      "category": "Meeting notes",
+      "description": "AI meeting notes that capture context and action items automatically.",
+      "url": "https://granola.ai"
+    },
+    {
+      "name": "Otter.ai",
+      "category": "Transcription",
+      "description": "Real-time meeting transcription with speaker identification and summaries.",
+      "url": "https://otter.ai"
+    }
+  ],
+  "automation": [
+    {
+      "name": "n8n",
+      "category": "Workflow automation",
+      "description": "Open-source workflow automation with AI integrations. Self-hostable.",
+      "url": "https://n8n.io"
+    },
+    {
+      "name": "Make",
+      "category": "Workflow automation",
+      "description": "Visual automation platform connecting apps and services.",
+      "url": "https://make.com"
+    },
+    {
+      "name": "Zapier",
+      "category": "Workflow automation",
+      "description": "Connect apps and automate workflows with a low-code interface.",
+      "url": "https://zapier.com"
+    }
+  ],
+  "agent_frameworks": [
+    {
+      "name": "LangChain",
+      "category": "Agent framework",
+      "description": "Popular framework for building LLM-powered applications and agents.",
+      "url": "https://langchain.com"
+    },
+    {
+      "name": "LangGraph",
+      "category": "Agent orchestration",
+      "description": "Graph-based agent orchestration built on LangChain. Stateful, multi-step workflows.",
+      "url": "https://langchain-ai.github.io/langgraph/"
+    },
+    {
+      "name": "CrewAI",
+      "category": "Multi-agent",
+      "description": "Framework for orchestrating role-playing autonomous AI agents.",
+      "url": "https://crewai.com"
+    },
+    {
+      "name": "AutoGen",
+      "category": "Multi-agent",
+      "description": "Microsoft's framework for building multi-agent conversational systems.",
+      "url": "https://microsoft.github.io/autogen/"
+    },
+    {
+      "name": "Google ADK",
+      "category": "Agent development",
+      "description": "Google's Agent Development Kit for building AI agents.",
+      "url": "https://developers.google.com/agents"
+    }
+  ]
+}
