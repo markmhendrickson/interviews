@@ -22,7 +22,7 @@ jobs:
 
       - name: Build
         env:
-          VITE_ELEVENLABS_AGENT_ID: ${{ secrets.VITE_ELEVENLABS_AGENT_ID }}
+          ELEVENLABS_AGENT_ID: ${{ secrets.ELEVENLABS_AGENT_ID }}
         run: npm run build
 
       - name: Deploy to Vercel

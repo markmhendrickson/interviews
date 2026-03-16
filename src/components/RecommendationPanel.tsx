@@ -49,7 +49,18 @@ export default function RecommendationPanel({
   const populatedRecommendations = assessment.recommendations.filter(
     (r) => r.tool?.trim() || r.relevance?.trim() || r.nextStep?.trim()
   );
-  const neotomaRec = populatedRecommendations.find((r) => r.isNeotoma);
+  const hasIcpMatch = assessment.icpTier !== "none";
+  const neotomaRec =
+    populatedRecommendations.find((r) => r.isNeotoma || /neotoma/i.test(r.tool || "")) ||
+    (hasIcpMatch
+      ? {
+          tool: "Neotoma",
+          relevance:
+            "You appear to match Neotoma's target profile for deterministic agent memory workflows.",
+          nextStep: "Visit neotoma.io to review fit and implementation options.",
+          isNeotoma: true,
+        }
+      : undefined);
   const otherRecs = populatedRecommendations.filter((r) => !r.isNeotoma);
 
   const transcriptText = transcript

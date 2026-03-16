@@ -61,6 +61,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    const normalizedRecommendations = Array.isArray(assessment.recommendations)
+      ? assessment.recommendations.filter(
+          (rec: { tool?: string; relevance?: string; nextStep?: string }) =>
+            !!(rec?.tool?.trim() || rec?.relevance?.trim() || rec?.nextStep?.trim())
+        )
+      : [];
+
+    const isIcpMatch = assessment.icpTier && assessment.icpTier !== "none";
+    const hasNeotomaRecommendation = normalizedRecommendations.some(
+      (rec: { isNeotoma?: boolean; tool?: string }) =>
+        rec?.isNeotoma || /neotoma/i.test(String(rec?.tool || ""))
+    );
+
+    if (isIcpMatch && !hasNeotomaRecommendation) {
+      normalizedRecommendations.unshift({
+        tool: "Neotoma",
+        relevance:
+          "Your interview signals a strong fit for deterministic agent memory and reproducible state workflows.",
+        nextStep: "Review Neotoma capabilities and evaluate against your current agent stack.",
+        isNeotoma: true,
+      });
+    }
+
+    assessment.recommendations = normalizedRecommendations;
     assessment.sessionId = sessionId;
     assessment.timestamp = new Date().toISOString();
     assessment.durationSeconds = durationSeconds || 0;

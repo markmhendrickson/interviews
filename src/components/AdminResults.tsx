@@ -27,6 +27,8 @@ interface StoredResult {
   storedAt: string;
 }
 
+const ADMIN_SESSION_KEY = "network_survey_admin_passphrase";
+
 const TIER_LABELS: Record<string, string> = {
   tier1_infra: "Tier 1 — Infra Engineer",
   tier1_agent: "Tier 1 — Agent Builder",
@@ -250,7 +252,10 @@ function ResultDetail({
 }
 
 export default function AdminResults() {
-  const [passphrase, setPassphrase] = useState<string | null>(null);
+  const [passphrase, setPassphrase] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.sessionStorage.getItem(ADMIN_SESSION_KEY);
+  });
   const [results, setResults] = useState<StoredResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -278,6 +283,9 @@ export default function AdminResults() {
       if (resp.status === 401) {
         setError("Incorrect passphrase");
         setPassphrase(null);
+        if (typeof window !== "undefined") {
+          window.sessionStorage.removeItem(ADMIN_SESSION_KEY);
+        }
         return;
       }
       const data = await resp.json();
@@ -286,6 +294,13 @@ export default function AdminResults() {
       setError("Failed to load results");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleLogin = useCallback((pass: string) => {
+    setPassphrase(pass);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(ADMIN_SESSION_KEY, pass);
     }
   }, []);
 
@@ -335,7 +350,7 @@ export default function AdminResults() {
   };
 
   if (!passphrase) {
-    return <LoginForm onLogin={setPassphrase} />;
+    return <LoginForm onLogin={handleLogin} />;
   }
 
   if (selectedResult) {

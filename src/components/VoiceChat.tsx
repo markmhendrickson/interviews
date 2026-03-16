@@ -122,9 +122,6 @@ export default function VoiceChat({
   }, []);
 
   const handleEnd = useCallback(async () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/f02eec2f-f55c-4aa3-a49a-2deb4fcb40d7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a329b'},body:JSON.stringify({sessionId:'0a329b',runId:'end-screen-debug',hypothesisId:'H1',location:'VoiceChat.tsx:handleEnd',message:'handleEnd invoked',data:{hasHandledEnd:hasHandledEnd.current,transcriptLength:messagesRef.current.length,isUnmounting:isUnmounting.current},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (hasHandledEnd.current) return;
 
     const finalTranscript = messagesRef.current;
@@ -199,10 +196,7 @@ export default function VoiceChat({
 
         let signedUrl: string | null = null;
         try {
-          for (const endpoint of [
-            "/api/elevenlabs/signed-url",
-            "/api/evenlabs/signed-url",
-          ]) {
+          for (const endpoint of ["/api/elevenlabs/signed-url"]) {
             const resp = await fetch(endpoint, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -241,9 +235,6 @@ export default function VoiceChat({
             closeCode?: number;
             closeReason?: string;
           }) => {
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/f02eec2f-f55c-4aa3-a49a-2deb4fcb40d7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a329b'},body:JSON.stringify({sessionId:'0a329b',runId:'end-screen-debug',hypothesisId:'H2',location:'VoiceChat.tsx:onDisconnect',message:'onDisconnect fired',data:{reason:details?.reason,closeCode:details?.closeCode,closeReason:details?.closeReason,hasTerminalError:hasTerminalError.current,hasHandledEnd:hasHandledEnd.current},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             if (cancelled) return;
             if (isUnmounting.current) return;
             if (hasTerminalError.current) return;
@@ -261,9 +252,6 @@ export default function VoiceChat({
             void handleEnd();
           },
           onModeChange: ({ mode }: { mode: string }) => {
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/f02eec2f-f55c-4aa3-a49a-2deb4fcb40d7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a329b'},body:JSON.stringify({sessionId:'0a329b',runId:'end-screen-debug',hypothesisId:'H3',location:'VoiceChat.tsx:onModeChange',message:'mode changed',data:{mode,statusBefore:status},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             if (cancelled) return;
             if (mode === "speaking") setStatus("speaking");
             else if (mode === "listening") setStatus("listening");
@@ -275,9 +263,6 @@ export default function VoiceChat({
               /have a great day|don't hesitate to reach out|you'?re welcome|goodbye|bye for now/.test(
                 normalized
               );
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/f02eec2f-f55c-4aa3-a49a-2deb4fcb40d7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a329b'},body:JSON.stringify({sessionId:'0a329b',runId:'end-screen-debug',hypothesisId:'H4',location:'VoiceChat.tsx:onMessage',message:'message received',data:{source:msg.source,textLength:msg.message?.length,looksLikeGoodbye},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             if (cancelled) return;
             const role = msg.source === "user" ? ("user" as const) : ("assistant" as const);
             setMessages((prev) => [...prev, { role, content: msg.message }]);
@@ -288,9 +273,6 @@ export default function VoiceChat({
               !hasHandledEnd.current
             ) {
               hasTriggeredAutoEnd.current = true;
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/f02eec2f-f55c-4aa3-a49a-2deb4fcb40d7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a329b'},body:JSON.stringify({sessionId:'0a329b',runId:'end-screen-debug',hypothesisId:'H5',location:'VoiceChat.tsx:onMessage',message:'auto-finalize triggered from goodbye message',data:{isOpen:conversationRef.current?.isOpen?.() ?? false},timestamp:Date.now()})}).catch(()=>{});
-              // #endregion
               const activeConversation = conversationRef.current;
               if (activeConversation?.isOpen()) {
                 void activeConversation
