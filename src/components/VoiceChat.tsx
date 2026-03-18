@@ -628,7 +628,7 @@ export default function VoiceChat({
   const statusLabel: Record<VoiceStatus, string> = {
     connecting: "Connecting...",
     connected: "Connected",
-    speaking: "AI is speaking...",
+    speaking: "Speaking...",
     listening: "Listening...",
     error: "Connection error",
   };
@@ -839,7 +839,7 @@ export default function VoiceChat({
                 }`}
               >
                 <span className="font-medium">
-                  {msg.role === "user" ? "You" : "AI"}:
+                  {msg.role === "user" ? "You" : "Mark's assistant"}:
                 </span>{" "}
                 {msg.content}
               </p>

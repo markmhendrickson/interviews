@@ -32,11 +32,21 @@ const TOOL_URL_HINTS: Record<string, string> = {
   perplexity: "https://perplexity.ai",
 };
 
-function getRecommendationUrl(rec: Recommendation): string {
+function getRecommendationUrl(
+  rec: Recommendation,
+  interviewSlug: string
+): string {
+  const normalizedTool = (rec.tool || "").trim().toLowerCase();
+  if (
+    normalizedTool === "continue interview" ||
+    normalizedTool === "continue the interview"
+  ) {
+    return `/${encodeURIComponent(interviewSlug)}`;
+  }
+
   const explicit = rec.url?.trim();
   if (explicit) return explicit;
 
-  const normalizedTool = (rec.tool || "").trim().toLowerCase();
   if (normalizedTool && TOOL_URL_HINTS[normalizedTool]) {
     return TOOL_URL_HINTS[normalizedTool];
   }
@@ -45,13 +55,20 @@ function getRecommendationUrl(rec: Recommendation): string {
   return `https://www.google.com/search?q=${encodeURIComponent(`${rec.tool} official site`)}`;
 }
 
-function ToolCard({ rec }: { rec: Recommendation }) {
-  const href = getRecommendationUrl(rec);
+function ToolCard({
+  rec,
+  interviewSlug,
+}: {
+  rec: Recommendation;
+  interviewSlug: string;
+}) {
+  const href = getRecommendationUrl(rec, interviewSlug);
+  const isInternalLink = href.startsWith("/");
   return (
     <a
       href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+      target={isInternalLink ? undefined : "_blank"}
+      rel={isInternalLink ? undefined : "noopener noreferrer"}
       className="block bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-colors shadow-[0px_15px_30px_0px_rgba(0,0,0,0.05)]"
     >
       <div className="flex items-start justify-between mb-2">
@@ -76,6 +93,29 @@ export default function RecommendationPanel({
   interviewConfig,
   onStartNewInterview,
 }: RecommendationPanelProps) {
+  const safeRecommendations = Array.isArray(assessment.recommendations)
+    ? assessment.recommendations
+    : [];
+  const safeMatchedSignals = Array.isArray(assessment.matchedSignals)
+    ? assessment.matchedSignals
+    : [];
+  const safeAntiIcpSignals = Array.isArray(assessment.antiIcpSignals)
+    ? assessment.antiIcpSignals
+    : [];
+  const safePersonSummary = typeof assessment.personSummary === "string"
+    ? assessment.personSummary
+    : "";
+  const safeReferralNotes = typeof assessment.referralNotes === "string"
+    ? assessment.referralNotes
+    : "";
+  const safeMatchConfidence =
+    typeof assessment.matchConfidence === "number" ? assessment.matchConfidence : 0;
+  const safeReferralPotential =
+    assessment.referralPotential === "high" ||
+    assessment.referralPotential === "medium" ||
+    assessment.referralPotential === "low"
+      ? assessment.referralPotential
+      : "low";
   const isNeotomaRecommendation = (rec: Recommendation) =>
     Boolean(rec.isNeotoma || /neotoma/i.test(rec.tool || ""));
   const [email, setEmail] = useState("");
@@ -85,15 +125,15 @@ export default function RecommendationPanel({
   ]);
   const [referralsSubmitted, setReferralsSubmitted] = useState(false);
 
-  const populatedRecommendations = assessment.recommendations.filter(
+  const populatedRecommendations = safeRecommendations.filter(
     (r) => r.tool?.trim() || r.relevance?.trim() || r.nextStep?.trim()
   );
   const neotomaConfidenceThreshold = 70;
   const hasStrongIcpMatchForFallback =
     assessment.icpTier !== "none" &&
-    assessment.matchConfidence >= neotomaConfidenceThreshold &&
-    assessment.matchedSignals.length >= 2 &&
-    assessment.antiIcpSignals.length === 0;
+    safeMatchConfidence >= neotomaConfidenceThreshold &&
+    safeMatchedSignals.length >= 2 &&
+    safeAntiIcpSignals.length === 0;
   const neotomaRec =
     populatedRecommendations.find(isNeotomaRecommendation) ||
     (hasStrongIcpMatchForFallback
@@ -114,13 +154,13 @@ export default function RecommendationPanel({
     .map((m) => m.content)
     .join(" ")
     .toLowerCase();
-  const referralHints = `${assessment.referralNotes || ""} ${transcriptText}`.toLowerCase();
+  const referralHints = `${safeReferralNotes} ${transcriptText}`.toLowerCase();
   const shouldShowReferralForm =
-    assessment.referralPotential !== "low" ||
+    safeReferralPotential !== "low" ||
     /\b(referral|intro|introduce|colleague|friend|know someone|pass along)\b/.test(
       referralHints
     );
-  const personSummaryForDisplay = assessment.personSummary
+  const personSummaryForDisplay = safePersonSummary
     .replace(/\b[Tt]he contact\b/g, "You")
     .replace(/\b[Cc]ontact\b/g, "You")
     .replace(/\btheir\b/g, "your")
@@ -128,7 +168,7 @@ export default function RecommendationPanel({
     .replace(/\b[Yy]ou was\b/g, "You were");
   const summaryIndicatesNoEngagement =
     /minimal engagement|did not share|no substantive|no engagement|provided minimal|despite multiple prompts|ended conversation immediately|without sharing/i.test(
-      assessment.personSummary
+      safePersonSummary
     );
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
@@ -230,7 +270,7 @@ export default function RecommendationPanel({
             {neotomaRec && <NeotomaInstallCard relevance={neotomaRec.relevance} />}
 
             {otherRecs.map((rec, i) => (
-              <ToolCard key={i} rec={rec} />
+              <ToolCard key={i} rec={rec} interviewSlug={interviewConfig.slug} />
             ))}
           </div>
         )}
@@ -317,7 +357,7 @@ export default function RecommendationPanel({
                 Want to continue this live with Mark?
               </p>
               <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                Book a 30-minute conversation if you want to go deeper after this AI interview.
+                Book a 30-minute conversation if you want to go deeper.
               </p>
               <a
                 href={LIVE_SCHEDULING_30_MIN_URL}
@@ -375,7 +415,7 @@ export default function RecommendationPanel({
               className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 rounded-lg px-4 py-2.5 transition-colors"
             >
               <MessageSquare className="w-4 h-4" />
-              Start new interview
+              Start a new conversation
             </button>
             <p className="text-xs text-muted-foreground mt-2">
               Choose voice, text, or live with Mark again.
@@ -385,7 +425,7 @@ export default function RecommendationPanel({
 
         <div className="text-center mt-8">
           <p className="text-xs text-muted-foreground">
-            Powered by AI on behalf of Mark Hendrickson
+            Curated by Mark with help from AI
           </p>
         </div>
       </div>

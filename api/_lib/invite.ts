@@ -51,7 +51,7 @@ export async function generateTextInvite(
   const message = renderTemplate(template, {
     name: contact.name,
     share_url: shareUrl,
-    interview_name: options?.interviewName || "AI interview",
+    interview_name: options?.interviewName || "conversation",
     sender_name: options?.senderName || "Mark",
   }).trim();
   return { message, shareUrl };
@@ -86,7 +86,7 @@ export async function sendInviteEmail(
     process.env.SENDGRID_FROM_NAME ||
     "Mark";
 
-  const interviewName = options?.interviewName || "AI interview";
+  const interviewName = options?.interviewName || "conversation";
   const shareUrl = buildShareUrl(interviewSlug, contact.code);
   const emailTemplate = await readFile(EMAIL_TEMPLATE_PATH, "utf8");
   const textTemplate = await readFile(TEXT_TEMPLATE_PATH, "utf8");
@@ -110,7 +110,7 @@ export async function sendInviteEmail(
       email: fromEmail,
       name: fromName,
     },
-    subject: `${interviewName}: quick invite`,
+    subject: `Quick conversation — would love your input`,
     text,
     html,
   });

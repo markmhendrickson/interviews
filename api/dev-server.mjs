@@ -516,7 +516,7 @@ async function processInvite(req, res) {
   }
 
   const senderName = String(req.body?.senderName || process.env.SENDGRID_FROM_NAME || "Mark").trim();
-  const interviewName = "AI interview";
+  const interviewName = "conversation";
   const shareUrl = buildShareUrl(interviewSlug, code);
   const { emailTemplate, textTemplate } = await loadInviteTemplates();
   const text = renderTemplate(textTemplate, {

@@ -1,6 +1,6 @@
 Hi {{name}} - {{sender_name}} here.
 
-When you have a few minutes, I would really value your input in this short {{interview_name}} interview:
+I'd love your input on something I'm working on. It's a short conversation personalized for you — should only take a few minutes, and you'll get some tailored recommendations at the end:
 {{share_url}}
 
 Thanks a lot.

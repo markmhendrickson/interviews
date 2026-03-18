@@ -227,9 +227,9 @@ function LandingPage() {
   return (
     <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
       <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-8">
-        <h1 className="text-2xl font-semibold mb-2">Interviews</h1>
+        <h1 className="text-2xl font-semibold mb-2">Conversations</h1>
         <p className="text-sm text-muted-foreground mb-6">
-          Choose an interview flow.
+          Choose a conversation to get started.
         </p>
         <div className="space-y-3">
           {listInterviewConfigs().map((config) => (

@@ -13,14 +13,14 @@ export interface InterviewConfig {
 const interviewConfigs: InterviewConfig[] = [
   {
     slug: "ai",
-    name: "AI interview",
+    name: "Quick conversation",
     summary: "Conversational AI qualification and recommendations.",
-    assistantDisplayName: "Mark's AI Assistant",
+    assistantDisplayName: "Mark's assistant",
     welcomeHeadline: "Hi there!",
     welcomeDescription:
-      "I'm building something and would love to learn how AI fits into your life.",
-    voiceLabel: "Voice interview",
-    textLabel: "Network survey",
+      "I'd love to learn what tools and workflows matter most to you — and share personalized recommendations based on what I've seen work for people in similar roles.",
+    voiceLabel: "Voice conversation",
+    textLabel: "Text conversation",
     adminTitle: "AI interview results",
   },
 ];

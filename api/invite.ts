@@ -45,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const config = getInterviewConfigBySlug(interviewSlug);
-    const interviewName = config?.name || "AI interview";
+    const interviewName = config?.name || "conversation";
     const senderName =
       (typeof req.body?.senderName === "string" && req.body.senderName.trim()) ||
       process.env.SENDGRID_FROM_NAME ||
