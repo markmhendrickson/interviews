@@ -7,20 +7,53 @@ import {
   Trash2,
   CheckCircle2,
   User,
+  CalendarDays,
+  MessageSquare,
 } from "lucide-react";
 import type { Assessment, Recommendation, ReferralContact } from "../lib/assessment";
 import type { Contact } from "../lib/contacts";
 import NeotomaInstallCard from "./NeotomaInstallCard";
+import type { InterviewConfig } from "../interviews/registry";
+import { LIVE_SCHEDULING_30_MIN_URL } from "../lib/scheduling";
 
 interface RecommendationPanelProps {
   assessment: Assessment;
   transcript: { role: "user" | "assistant"; content: string }[];
   contact: Contact | null;
+  interviewConfig: InterviewConfig;
+  onStartNewInterview?: () => void;
+}
+
+const TOOL_URL_HINTS: Record<string, string> = {
+  "chatgpt custom gpts": "https://chat.openai.com/gpts",
+  "chatgpt gpts": "https://chat.openai.com/gpts",
+  "claude with projects": "https://claude.ai",
+  "claude projects": "https://claude.ai",
+  perplexity: "https://perplexity.ai",
+};
+
+function getRecommendationUrl(rec: Recommendation): string {
+  const explicit = rec.url?.trim();
+  if (explicit) return explicit;
+
+  const normalizedTool = (rec.tool || "").trim().toLowerCase();
+  if (normalizedTool && TOOL_URL_HINTS[normalizedTool]) {
+    return TOOL_URL_HINTS[normalizedTool];
+  }
+
+  // Ensure every concrete recommendation has a useful destination.
+  return `https://www.google.com/search?q=${encodeURIComponent(`${rec.tool} official site`)}`;
 }
 
 function ToolCard({ rec }: { rec: Recommendation }) {
+  const href = getRecommendationUrl(rec);
   return (
-    <div className="bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-colors shadow-[0px_15px_30px_0px_rgba(0,0,0,0.05)]">
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-colors shadow-[0px_15px_30px_0px_rgba(0,0,0,0.05)]"
+    >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-semibold text-foreground">{rec.tool}</h3>
         <ExternalLink className="w-4 h-4 text-muted-foreground flex-shrink-0" />
@@ -32,7 +65,7 @@ function ToolCard({ rec }: { rec: Recommendation }) {
         <ArrowRight className="w-3.5 h-3.5" />
         {rec.nextStep}
       </div>
-    </div>
+    </a>
   );
 }
 
@@ -40,19 +73,30 @@ export default function RecommendationPanel({
   assessment,
   transcript,
   contact,
+  interviewConfig,
+  onStartNewInterview,
 }: RecommendationPanelProps) {
+  const isNeotomaRecommendation = (rec: Recommendation) =>
+    Boolean(rec.isNeotoma || /neotoma/i.test(rec.tool || ""));
   const [email, setEmail] = useState("");
   const [emailSubmitted, setEmailSubmitted] = useState(false);
-  const [referrals, setReferrals] = useState<ReferralContact[]>([{ name: "", email: "", notes: "" }]);
+  const [referrals, setReferrals] = useState<ReferralContact[]>([
+    { name: "", contactInfo: "", notes: "" },
+  ]);
   const [referralsSubmitted, setReferralsSubmitted] = useState(false);
 
   const populatedRecommendations = assessment.recommendations.filter(
     (r) => r.tool?.trim() || r.relevance?.trim() || r.nextStep?.trim()
   );
-  const hasIcpMatch = assessment.icpTier !== "none";
+  const neotomaConfidenceThreshold = 70;
+  const hasStrongIcpMatchForFallback =
+    assessment.icpTier !== "none" &&
+    assessment.matchConfidence >= neotomaConfidenceThreshold &&
+    assessment.matchedSignals.length >= 2 &&
+    assessment.antiIcpSignals.length === 0;
   const neotomaRec =
-    populatedRecommendations.find((r) => r.isNeotoma || /neotoma/i.test(r.tool || "")) ||
-    (hasIcpMatch
+    populatedRecommendations.find(isNeotomaRecommendation) ||
+    (hasStrongIcpMatchForFallback
       ? {
           tool: "Neotoma",
           relevance:
@@ -61,7 +105,9 @@ export default function RecommendationPanel({
           isNeotoma: true,
         }
       : undefined);
-  const otherRecs = populatedRecommendations.filter((r) => !r.isNeotoma);
+  const otherRecs = populatedRecommendations.filter(
+    (r) => !isNeotomaRecommendation(r)
+  );
 
   const transcriptText = transcript
     .filter((m) => m.role === "user")
@@ -74,6 +120,16 @@ export default function RecommendationPanel({
     /\b(referral|intro|introduce|colleague|friend|know someone|pass along)\b/.test(
       referralHints
     );
+  const personSummaryForDisplay = assessment.personSummary
+    .replace(/\b[Tt]he contact\b/g, "You")
+    .replace(/\b[Cc]ontact\b/g, "You")
+    .replace(/\btheir\b/g, "your")
+    .replace(/\b[Tt]hey\b/g, "you")
+    .replace(/\b[Yy]ou was\b/g, "You were");
+  const summaryIndicatesNoEngagement =
+    /minimal engagement|did not share|no substantive|no engagement|provided minimal|despite multiple prompts|ended conversation immediately|without sharing/i.test(
+      assessment.personSummary
+    );
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,7 +140,7 @@ export default function RecommendationPanel({
     await fetch("/api/results", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ assessment }),
+      body: JSON.stringify({ assessment, interviewSlug: interviewConfig.slug }),
     }).catch(() => {});
 
     setEmailSubmitted(true);
@@ -101,7 +157,7 @@ export default function RecommendationPanel({
   };
 
   const addReferralRow = () => {
-    setReferrals((prev) => [...prev, { name: "", email: "", notes: "" }]);
+    setReferrals((prev) => [...prev, { name: "", contactInfo: "", notes: "" }]);
   };
 
   const removeReferralRow = (index: number) => {
@@ -113,7 +169,7 @@ export default function RecommendationPanel({
     const cleaned = referrals
       .map((entry) => ({
         name: entry.name.trim(),
-        email: entry.email?.trim(),
+        contactInfo: (entry.contactInfo || entry.email || "").trim(),
         notes: entry.notes?.trim(),
       }))
       .filter((entry) => entry.name);
@@ -124,7 +180,7 @@ export default function RecommendationPanel({
     await fetch("/api/results", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ assessment }),
+      body: JSON.stringify({ assessment, interviewSlug: interviewConfig.slug }),
     }).catch(() => {});
 
     setReferralsSubmitted(true);
@@ -138,47 +194,46 @@ export default function RecommendationPanel({
             <CheckCircle2 className="w-6 h-6" />
           </div>
           <h1 className="text-2xl font-semibold text-foreground mb-2">
-            Your personalized recommendations
+            Thanks for the conversation
           </h1>
           <p className="text-muted-foreground">
-            Based on our conversation,{" "}
-            {contact?.name ? `${contact.name}` : "here's what we found"}
+            {contact?.name
+              ? `Here's your summary and next steps, ${contact.name}`
+              : "Here's your summary and next steps"}
           </p>
         </div>
 
-        <div className="bg-card border border-border rounded-xl p-5 mb-8">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
-              <User className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground mb-1">
-                What you told me
-              </p>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                {assessment.personSummary}
-              </p>
+        {!summaryIndicatesNoEngagement && (
+          <div className="bg-card border border-border rounded-xl p-5 mb-8">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
+                <User className="w-4 h-4 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-foreground mb-1">
+                  What you told me
+                </p>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {personSummaryForDisplay}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        <div className="space-y-4 mb-8">
-          <h2 className="text-lg font-semibold text-foreground">
-            Recommendations for you
-          </h2>
+        {(neotomaRec || otherRecs.length > 0) && (
+          <div className="space-y-4 mb-8">
+            <h2 className="text-lg font-semibold text-foreground">
+              Recommendations for you
+            </h2>
 
-          {neotomaRec && <NeotomaInstallCard relevance={neotomaRec.relevance} />}
+            {neotomaRec && <NeotomaInstallCard relevance={neotomaRec.relevance} />}
 
-          {otherRecs.map((rec, i) => (
-            <ToolCard key={i} rec={rec} />
-          ))}
-
-          {!neotomaRec && otherRecs.length === 0 && (
-            <div className="bg-card border border-border rounded-xl p-5 text-sm text-muted-foreground">
-              No specific tool recommendations were identified from this conversation.
-            </div>
-          )}
-        </div>
+            {otherRecs.map((rec, i) => (
+              <ToolCard key={i} rec={rec} />
+            ))}
+          </div>
+        )}
 
         {shouldShowReferralForm && (
           <div className="bg-card border border-border rounded-xl p-5 mb-6">
@@ -205,17 +260,19 @@ export default function RecommendationPanel({
                       className="md:col-span-3 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
                     />
                     <input
-                      type="email"
-                      value={referral.email || ""}
-                      onChange={(e) => handleReferralChange(index, "email", e.target.value)}
-                      placeholder="Email (optional)"
+                      type="text"
+                      value={referral.contactInfo || referral.email || ""}
+                      onChange={(e) =>
+                        handleReferralChange(index, "contactInfo", e.target.value)
+                      }
+                      placeholder="Email, phone, or handle (optional)"
                       className="md:col-span-3 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
                     />
                     <input
                       type="text"
                       value={referral.notes || ""}
                       onChange={(e) => handleReferralChange(index, "notes", e.target.value)}
-                      placeholder="Why relevant?"
+                      placeholder="Why relevant? (optional)"
                       className="md:col-span-5 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
                     />
                     <button
@@ -250,6 +307,29 @@ export default function RecommendationPanel({
           </div>
         )}
 
+        <div className="bg-card border border-border rounded-xl p-5 mb-8">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
+              <CalendarDays className="w-4 h-4 text-muted-foreground" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground mb-1">
+                Want to continue this live with Mark?
+              </p>
+              <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                Book a 30-minute conversation if you want to go deeper after this AI interview.
+              </p>
+              <a
+                href={LIVE_SCHEDULING_30_MIN_URL}
+                className="inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                Schedule 30-minute live time
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+        </div>
+
         {!contact && (
           <div className="bg-card border border-border rounded-xl p-5">
             <h3 className="text-sm font-semibold text-foreground mb-2">
@@ -283,6 +363,22 @@ export default function RecommendationPanel({
             )}
             <p className="text-xs text-muted-foreground mt-2">
               Optional — leave blank and just close the tab if you prefer.
+            </p>
+          </div>
+        )}
+
+        {onStartNewInterview && (
+          <div className="text-center mt-6">
+            <button
+              type="button"
+              onClick={onStartNewInterview}
+              className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 rounded-lg px-4 py-2.5 transition-colors"
+            >
+              <MessageSquare className="w-4 h-4" />
+              Start new interview
+            </button>
+            <p className="text-xs text-muted-foreground mt-2">
+              Choose voice, text, or live with Mark again.
             </p>
           </div>
         )}

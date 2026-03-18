@@ -1,14 +1,19 @@
-# Network Survey App
+# Interviews App
 
 Conversational AI app that qualifies Mark's network contacts against Neotoma ICP tiers and delivers personalized AI tool recommendations. Supports voice mode (via ElevenLabs) and text mode (via Anthropic Claude).
 
 ## Setup
 
+This project uses a single **`.env`** file for local config. The API and Vite both read from it.
+
 ```bash
 npm install
-cp .env.example .env.local
-# Fill in ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ADMIN_PASSPHRASE
+cp .env.example .env
+# Fill in ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ADMIN_PASSPHRASE,
+# KV_REST_API_URL (https), KV_REST_API_TOKEN
 ```
+
+To sync with Vercel (e.g. Redis REST URL): `vercel link` once, then `vercel env pull .env`. That overwrites `.env` with the project’s env vars, so keep required keys in the Vercel project. If you previously pulled into `.env.development.local`, copy its vars into `.env` and use `.env` only.
 
 ## Development
 
@@ -24,38 +29,30 @@ Voice mode requires an ElevenLabs Conversational AI agent. Run the setup script 
 ```bash
 export ELEVENLABS_API_KEY=your-key
 ./scripts/setup_elevenlabs_agent.sh
-# Copy the agent_id to .env.local as ELEVENLABS_AGENT_ID
+# Copy the agent_id to .env as ELEVENLABS_AGENT_ID
 ```
 
 ## Architecture
 
 - **Frontend**: React + Vite + Tailwind, deployed as static site
-- **API**: Vercel serverless functions (`/api/chat`, `/api/assess`, `/api/results`)
+- **API**: Vercel serverless functions (`/api/chat`, `/api/assess`, `/api/results`, `/api/contacts`, `/api/events`, `/api/invite`, `/api/admin`)
 - **Voice**: ElevenLabs Conversational AI handles STT + Claude + TTS pipeline
 - **Text**: Streaming chat via Anthropic API proxy
 - **Assessment**: Post-conversation structured extraction via Claude
 
 ## Routes
 
-- `/` — Interview flow (welcome -> conversation -> recommendations)
-- `/?c=CODE` — Personalized entry with contact name/context from `contacts.json`
-- `/admin` — Results dashboard (passphrase-protected)
+- `/` — Landing page for interview entry points
+- `/ai` — AI interview flow (welcome -> conversation -> recommendations)
+- `/ai?c=CODE` — Personalized interview link with contact name/context
+- `/ai/admin` — Results dashboard (passphrase-protected)
 
 ## Personalized links
 
-Edit `src/data/contacts.json` to add contacts:
+Manage contact codes from the `/ai/admin` dashboard. Contacts are stored in shared
+Vercel-backed storage and work across devices/browsers.
 
-```json
-{
-  "abc123": {
-    "name": "Sarah",
-    "context": "building agent infrastructure at Acme Corp",
-    "source": "linkedin"
-  }
-}
-```
-
-Send the link: `https://your-domain.vercel.app/?c=abc123`
+Send the link: `https://interview.markmhendrickson.com/ai?c=<contact-code>`
 
 ## Deploy
 
@@ -66,4 +63,18 @@ Required Vercel environment variables:
 - `ELEVENLABS_API_KEY`
 - `ELEVENLABS_AGENT_ID`
 - `ADMIN_PASSPHRASE`
+- `KV_REST_API_URL` — must be the **REST** endpoint (`https://...`). Do not use the `redis://` URL; the Upstash client requires HTTPS. In Vercel, connect the Redis integration to the project and use the injected `KV_REST_API_URL`. For local dev, copy the REST URL from the integration or Upstash dashboard.
+- `KV_REST_API_TOKEN`
+- `KV_KEY_PREFIX` (recommended when sharing one Redis DB between envs)
+- `SENDGRID_API_KEY` (for invite email delivery)
+- `SENDGRID_FROM_EMAIL` (sender email for invites)
+- `SENDGRID_FROM_NAME` (sender display name for invites)
 - `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` (for CI deploy)
+
+Admin API auth:
+- All `/api/admin` operations require `Authorization: Bearer <ADMIN_PASSPHRASE>`.
+- `/api/admin` supports `resource=overview|results|contacts|events` via `GET`, contact upsert via `POST resource=contacts`, invite actions via `POST resource=invite`, and delete via `DELETE resource=results|contacts`.
+
+Recommended key prefixes when using one free Redis DB:
+- Preview/Development: `KV_KEY_PREFIX=development` (or `preview`)
+- Production: `KV_KEY_PREFIX=production`

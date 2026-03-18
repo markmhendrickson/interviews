@@ -58,6 +58,7 @@
           "tool": { "type": "string", "description": "Tool or approach name" },
           "relevance": { "type": "string", "description": "Why it's relevant to them specifically" },
           "nextStep": { "type": "string", "description": "One concrete next step" },
+          "url": { "type": "string", "description": "Direct URL for the recommendation if known" },
           "isNeotoma": { "type": "boolean", "description": "True if this is the Neotoma recommendation" }
         }
       },

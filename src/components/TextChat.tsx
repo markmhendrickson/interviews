@@ -1,10 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, Loader2 } from "lucide-react";
+import { Send, Mic, Loader2, Phone } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
-import { generateSessionId } from "../lib/assessment";
+import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
 import { buildSystemPrompt } from "../lib/system_prompt";
 import { getInterviewOpeningMessage } from "../lib/interview_opening";
+import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
+import type { InterviewConfig } from "../interviews/registry";
+import {
+  countUserMessages,
+  recordInterviewEvent,
+  sendAbandonBeacon,
+} from "../lib/interview_events";
 
 interface Message {
   role: "user" | "assistant";
@@ -13,9 +22,12 @@ interface Message {
 
 interface TextChatProps {
   contact: Contact | null;
+  shareCode?: string | null;
   transcript: Message[];
+  onTranscriptChange: (transcript: Message[]) => void;
   onComplete: (transcript: Message[], assessment: Assessment) => void;
   onSwitchMode: () => void;
+  interviewConfig: InterviewConfig;
 }
 
 function parseAssessment(text: string): Assessment | null {
@@ -32,27 +44,125 @@ function stripAssessment(text: string): string {
   return text.replace(/<ASSESSMENT>[\s\S]*?<\/ASSESSMENT>/, "").trim();
 }
 
+function stripAssessmentProgressive(text: string): string {
+  const startTagIndex = text.indexOf("<ASSESSMENT>");
+  if (startTagIndex === -1) {
+    return text;
+  }
+  // Hide everything from the opening tag onward while streaming
+  return text.slice(0, startTagIndex).trimEnd();
+}
+
 export default function TextChat({
   contact,
+  shareCode,
   transcript: initialTranscript,
+  onTranscriptChange,
   onComplete,
   onSwitchMode,
+  interviewConfig,
 }: TextChatProps) {
   const [messages, setMessages] = useState<Message[]>(initialTranscript);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
   const [sessionId] = useState(generateSessionId);
   const [startTime] = useState(Date.now);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const systemPrompt = useRef(buildSystemPrompt(contact));
+  const systemPrompt = useRef(buildSystemPrompt(contact, interviewConfig));
   const hasInitialized = useRef(false);
+  const hasCompleted = useRef(false);
+  const hasStarted = useRef(false);
+  const hasSentAbandon = useRef(false);
+  const userProgressMilestone = useRef(0);
+  const messagesRef = useRef<Message[]>(initialTranscript);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
   useEffect(scrollToBottom, [messages]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    onTranscriptChange(messages);
+  }, [messages, onTranscriptChange]);
+
+  const completeInterview = useCallback(
+    (finalTranscript: Message[], finalAssessment: Assessment) => {
+      if (hasCompleted.current) return;
+      hasCompleted.current = true;
+      const userMessages = countUserMessages(finalTranscript);
+      void recordInterviewEvent({
+        eventType: "interview_completed",
+        interviewSlug: interviewConfig.slug,
+        sessionId: finalAssessment.sessionId,
+        shareCode: shareCode || contact?.code,
+        messageCount: userMessages,
+        metadata: {
+          channel: "text",
+        },
+      }).catch(() => {});
+      onComplete(finalTranscript, finalAssessment);
+    },
+    [contact?.code, interviewConfig.slug, onComplete, shareCode]
+  );
+
+  const finalizeFromCurrentTranscript = useCallback(async () => {
+    if (hasCompleted.current || isFinalizing) return;
+    setIsFinalizing(true);
+    const finalTranscript = messages.filter((m) => m.content?.trim());
+    const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+    let finalAssessment: Assessment;
+
+    try {
+      const resp = await fetch("/api/assess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript: finalTranscript,
+          sessionId,
+          contactName: contact?.name,
+          durationSeconds,
+          interviewSlug: interviewConfig.slug,
+        }),
+      });
+      if (!resp.ok) throw new Error("Assessment request failed");
+      finalAssessment = (await resp.json()) as Assessment;
+    } catch {
+      finalAssessment = buildFallbackAssessment({
+        transcript: finalTranscript,
+        sessionId,
+        contactName: contact?.name,
+        durationSeconds,
+      });
+    }
+
+    void fetch("/api/results", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        assessment: finalAssessment,
+        transcript: finalTranscript,
+        interviewSlug: interviewConfig.slug,
+      }),
+    }).catch(() => {});
+
+    completeInterview(finalTranscript, finalAssessment);
+    setIsFinalizing(false);
+  }, [
+    completeInterview,
+    contact?.name,
+    interviewConfig.slug,
+    isFinalizing,
+    messages,
+    sessionId,
+    startTime,
+  ]);
 
   const streamResponse = useCallback(
     async (allMessages: Message[]) => {
@@ -103,7 +213,9 @@ export default function TextChat({
                   const updated = [...prev];
                   updated[updated.length - 1] = {
                     role: "assistant",
-                    content: stripAssessment(accumulated),
+                    content: enforceSingleTrailingQuestion(
+                      stripAssessmentProgressive(accumulated)
+                    ),
                   };
                   return updated;
                 });
@@ -142,16 +254,25 @@ export default function TextChat({
 
           const finalTranscript = [
             ...allMessages,
-            { role: "assistant" as const, content: stripAssessment(accumulated) },
+            {
+              role: "assistant" as const,
+              content: enforceSingleTrailingQuestion(
+                stripAssessment(accumulated)
+              ),
+            },
           ];
 
-          await fetch("/api/results", {
+          void fetch("/api/results", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ assessment, transcript: finalTranscript }),
+            body: JSON.stringify({
+              assessment,
+              transcript: finalTranscript,
+              interviewSlug: interviewConfig.slug,
+            }),
           }).catch(() => {});
 
-          setTimeout(() => onComplete(finalTranscript, assessment), 1500);
+          completeInterview(finalTranscript, assessment);
         }
       } catch (error) {
         console.error("Stream error:", error);
@@ -190,7 +311,7 @@ export default function TextChat({
         setIsStreaming(false);
       }
     },
-    [contact, sessionId, startTime, onComplete]
+    [completeInterview, contact, interviewConfig.slug, sessionId, startTime]
   );
 
   useEffect(() => {
@@ -199,10 +320,57 @@ export default function TextChat({
 
     if (messages.length === 0) {
       setMessages([
-        { role: "assistant", content: getInterviewOpeningMessage(contact) },
+        {
+          role: "assistant",
+          content: getInterviewOpeningMessage(contact, interviewConfig),
+        },
       ]);
     }
-  }, [messages.length, contact]);
+  }, [messages.length, contact, interviewConfig]);
+
+  useEffect(() => {
+    const sendAbandon = () => {
+      if (hasCompleted.current || hasSentAbandon.current || !hasStarted.current) return;
+      const transcript = messagesRef.current.filter((item) => item.content?.trim());
+      const userMessages = countUserMessages(transcript);
+      if (userMessages === 0) return;
+      hasSentAbandon.current = true;
+      sendAbandonBeacon(
+        {
+          eventType: "interview_abandoned",
+          interviewSlug: interviewConfig.slug,
+          sessionId,
+          shareCode: shareCode || contact?.code,
+          messageCount: userMessages,
+          metadata: {
+            channel: "text",
+          },
+        },
+        {
+          interviewSlug: interviewConfig.slug,
+          sessionId,
+          transcript,
+          contactCode: shareCode || contact?.code || undefined,
+          messageCount: userMessages,
+        }
+      );
+    };
+
+    const handleBeforeUnload = () => {
+      sendAbandon();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) sendAbandon();
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [contact?.code, interviewConfig.slug, sessionId, shareCode]);
 
   const handleSend = () => {
     const trimmed = input.trim();
@@ -212,6 +380,37 @@ export default function TextChat({
       ...messages,
       { role: "user", content: trimmed },
     ];
+    const userMessageCount = countUserMessages(newMessages);
+    if (!hasStarted.current) {
+      hasStarted.current = true;
+      void recordInterviewEvent({
+        eventType: "interview_started",
+        interviewSlug: interviewConfig.slug,
+        sessionId,
+        shareCode: shareCode || contact?.code,
+        messageCount: userMessageCount,
+        metadata: {
+          channel: "text",
+        },
+      }).catch(() => {});
+    }
+    const currentMilestone = Math.floor(userMessageCount / 3);
+    if (currentMilestone > userProgressMilestone.current) {
+      userProgressMilestone.current = currentMilestone;
+      if (currentMilestone >= 1) {
+        void recordInterviewEvent({
+          eventType: "interview_progressed",
+          interviewSlug: interviewConfig.slug,
+          sessionId,
+          shareCode: shareCode || contact?.code,
+          messageCount: userMessageCount,
+          metadata: {
+            channel: "text",
+            milestone: currentMilestone,
+          },
+        }).catch(() => {});
+      }
+    }
     setMessages(newMessages);
     setInput("");
     streamResponse(newMessages);
@@ -233,18 +432,34 @@ export default function TextChat({
           </div>
           <div>
             <p className="text-sm font-medium text-foreground">
-              Mark's AI Assistant
+              {interviewConfig.assistantDisplayName}
             </p>
-            <p className="text-xs text-muted-foreground">Network survey</p>
+            <p className="text-xs text-muted-foreground">
+              {interviewConfig.textLabel}
+            </p>
           </div>
         </div>
-        <button
-          onClick={onSwitchMode}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground bg-secondary hover:bg-accent px-3 py-1.5 rounded-full transition-colors"
-        >
-          <Mic className="w-3.5 h-3.5" />
-          Switch to voice
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onSwitchMode}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground bg-secondary hover:bg-accent px-3 py-1.5 rounded-full transition-colors"
+          >
+            <Mic className="w-3.5 h-3.5" />
+            Switch to voice
+          </button>
+          <button
+            onClick={() => void finalizeFromCurrentTranscript()}
+            disabled={isFinalizing}
+            className="flex items-center gap-1.5 text-xs bg-[#a85f50] hover:bg-[#925244] text-white px-3 py-1.5 rounded-full transition-colors disabled:opacity-60"
+          >
+            {isFinalizing ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Phone className="w-3.5 h-3.5 rotate-[135deg]" />
+            )}
+            Finish now
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 max-w-2xl mx-auto w-full">
@@ -260,9 +475,17 @@ export default function TextChat({
                   : "bg-card border border-border text-card-foreground"
               }`}
             >
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                {msg.content}
-              </p>
+              {msg.role === "assistant" ? (
+                <div className="text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-code:text-current prose-code:bg-secondary/60 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {msg.content}
+                </p>
+              )}
             </div>
           </div>
         ))}

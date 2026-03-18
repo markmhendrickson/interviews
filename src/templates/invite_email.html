@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{interview_name}} invite</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f8f8f8;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#111827;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+            <tr>
+              <td style="padding:24px;">
+                <p style="margin:0 0 12px;font-size:16px;line-height:1.5;">Hi {{name}},</p>
+                <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#374151;">
+                  I would love your input through a short {{interview_name}} conversation.
+                </p>
+                <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#374151;">
+                  It is personalized for you and should only take a few minutes.
+                </p>
+                <p style="margin:0 0 24px;">
+                  <a href="{{share_url}}" style="display:inline-block;background:#111827;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 18px;border-radius:8px;">
+                    Open your interview link
+                  </a>
+                </p>
+                <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">
+                  If the button does not work, use this link:
+                </p>
+                <p style="margin:0 0 20px;font-size:13px;word-break:break-all;">
+                  <a href="{{share_url}}" style="color:#2563eb;text-decoration:none;">{{share_url}}</a>
+                </p>
+                <p style="margin:0;font-size:15px;line-height:1.5;">Thanks,<br />{{sender_name}}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

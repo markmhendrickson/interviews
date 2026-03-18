@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Mic,
   MicOff,
+  Volume2,
+  VolumeX,
   MessageSquare,
   Loader2,
   Phone,
@@ -12,7 +14,14 @@ import {
 import { Conversation } from "@elevenlabs/client";
 import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
-import { generateSessionId } from "../lib/assessment";
+import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
+import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
+import type { InterviewConfig } from "../interviews/registry";
+import {
+  countUserMessages,
+  recordInterviewEvent,
+  sendAbandonBeacon,
+} from "../lib/interview_events";
 
 interface Message {
   role: "user" | "assistant";
@@ -21,12 +30,15 @@ interface Message {
 
 interface VoiceChatProps {
   contact: Contact | null;
+  shareCode?: string | null;
   transcript: Message[];
+  onTranscriptChange: (transcript: Message[]) => void;
   onComplete: (transcript: Message[], assessment: Assessment) => void;
   onSwitchMode: () => void;
+  interviewConfig: InterviewConfig;
 }
 
-type VoiceStatus = "connecting" | "connected" | "speaking" | "listening" | "ended" | "error";
+type VoiceStatus = "connecting" | "connected" | "speaking" | "listening" | "error";
 
 function extractAgentId(rawValue: string): string {
   if (!rawValue) return "";
@@ -51,16 +63,22 @@ const AGENT_ID_LOOKS_MALFORMED =
     RAW_AGENT_ENV.includes("branchId") ||
     RAW_AGENT_ENV.includes("?"));
 
+const HARD_END_SESSION_TOKEN = "[[END_SESSION]]";
+
 export default function VoiceChat({
   contact,
+  shareCode,
   transcript: initialTranscript,
+  onTranscriptChange,
   onComplete,
   onSwitchMode,
+  interviewConfig,
 }: VoiceChatProps) {
   const [status, setStatus] = useState<VoiceStatus>("connecting");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>(initialTranscript);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
   const [copiedDebugInfo, setCopiedDebugInfo] = useState(false);
   const [sessionId] = useState(generateSessionId);
@@ -70,11 +88,15 @@ export default function VoiceChat({
   const contactRef = useRef(contact);
   const messagesRef = useRef<Message[]>(initialTranscript);
   const hasHandledEnd = useRef(false);
+  const hasCompleted = useRef(false);
   const isUnmounting = useRef(false);
   const hasUserEnded = useRef(false);
   const hasConnectTimedOut = useRef(false);
   const hasTerminalError = useRef(false);
   const hasTriggeredAutoEnd = useRef(false);
+  const hasStarted = useRef(false);
+  const hasSentAbandon = useRef(false);
+  const userProgressMilestone = useRef(0);
   const connectFailSafeTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -86,6 +108,10 @@ export default function VoiceChat({
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    onTranscriptChange(messages);
+  }, [messages, onTranscriptChange]);
 
   useEffect(() => {
     onCompleteRef.current = onComplete;
@@ -121,51 +147,115 @@ export default function VoiceChat({
     }
   }, []);
 
+  const completeInterview = useCallback(
+    async (finalTranscript: Message[]) => {
+      if (hasCompleted.current) return;
+      const cleanedTranscript = finalTranscript.filter((m) => m.content?.trim());
+      const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+      let assessment: Assessment;
+
+      try {
+        const resp = await fetch("/api/assess", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcript: cleanedTranscript,
+            sessionId,
+            contactName: contactRef.current?.name,
+            durationSeconds,
+            interviewSlug: interviewConfig.slug,
+          }),
+        });
+        if (!resp.ok) throw new Error("Assessment request failed");
+        assessment = (await resp.json()) as Assessment;
+      } catch {
+        assessment = buildFallbackAssessment({
+          transcript: cleanedTranscript,
+          sessionId,
+          contactName: contactRef.current?.name,
+          durationSeconds,
+        });
+      }
+
+      void fetch("/api/results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assessment,
+          transcript: cleanedTranscript,
+          interviewSlug: interviewConfig.slug,
+        }),
+      }).catch(() => {});
+
+      const userMessages = countUserMessages(cleanedTranscript);
+      void recordInterviewEvent({
+        eventType: "interview_completed",
+        interviewSlug: interviewConfig.slug,
+        sessionId,
+        shareCode: shareCode || contactRef.current?.code,
+        messageCount: userMessages,
+        metadata: {
+          channel: "voice",
+        },
+      }).catch(() => {});
+
+      hasCompleted.current = true;
+      onCompleteRef.current(cleanedTranscript, assessment);
+    },
+    [interviewConfig.slug, sessionId, shareCode, startTime]
+  );
+
   const handleEnd = useCallback(async () => {
     if (hasHandledEnd.current) return;
 
     const finalTranscript = messagesRef.current;
-    if (finalTranscript.length < 2) {
-      if (!isUnmounting.current) {
-        hasTerminalError.current = true;
-        setStatus("error");
-        setErrorMessage(
-          "Voice connection ended before the interview started. Please try again."
-        );
-      }
-      return;
-    }
-
     hasHandledEnd.current = true;
-    setStatus("ended");
+    await completeInterview(finalTranscript);
+  }, [completeInterview]);
 
-    try {
-      const resp = await fetch("/api/assess", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transcript: finalTranscript,
+  useEffect(() => {
+    const sendAbandon = () => {
+      if (hasCompleted.current || hasSentAbandon.current || !hasStarted.current) return;
+      const transcript = messagesRef.current.filter((item) => item.content?.trim());
+      const userMessages = countUserMessages(transcript);
+      if (userMessages === 0) return;
+      hasSentAbandon.current = true;
+      sendAbandonBeacon(
+        {
+          eventType: "interview_abandoned",
+          interviewSlug: interviewConfig.slug,
           sessionId,
-          contactName: contactRef.current?.name,
-          durationSeconds: Math.round((Date.now() - startTime) / 1000),
-        }),
-      });
+          shareCode: shareCode || contactRef.current?.code,
+          messageCount: userMessages,
+          metadata: {
+            channel: "voice",
+          },
+        },
+        {
+          interviewSlug: interviewConfig.slug,
+          sessionId,
+          transcript,
+          contactCode: shareCode || contactRef.current?.code || undefined,
+          messageCount: userMessages,
+        }
+      );
+    };
 
-      if (resp.ok) {
-        const assessment: Assessment = await resp.json();
+    const handleBeforeUnload = () => {
+      sendAbandon();
+    };
 
-        await fetch("/api/results", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ assessment, transcript: finalTranscript }),
-        }).catch(() => {});
+    const handleVisibilityChange = () => {
+      if (document.hidden) sendAbandon();
+    };
 
-        onCompleteRef.current(finalTranscript, assessment);
-      }
-    } catch (error) {
-      console.error("Assessment extraction failed:", error);
-    }
-  }, [sessionId, startTime]);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [interviewConfig.slug, sessionId, shareCode]);
 
   useEffect(() => {
     if (!AGENT_ID) return;
@@ -258,17 +348,63 @@ export default function VoiceChat({
             else setStatus("connected");
           },
           onMessage: (msg: { source: "user" | "ai"; message: string }) => {
-            const normalized = String(msg.message || "").toLowerCase();
-            const looksLikeGoodbye =
-              /have a great day|don't hesitate to reach out|you'?re welcome|goodbye|bye for now/.test(
-                normalized
-              );
             if (cancelled) return;
+            const rawMessage = String(msg.message || "");
+            const hasHardEndToken =
+              msg.source === "ai" && rawMessage.includes(HARD_END_SESSION_TOKEN);
+            const displayMessage = hasHardEndToken
+              ? rawMessage
+                  .split(HARD_END_SESSION_TOKEN)
+                  .join("")
+                  .trim()
+              : rawMessage;
             const role = msg.source === "user" ? ("user" as const) : ("assistant" as const);
-            setMessages((prev) => [...prev, { role, content: msg.message }]);
+            const normalizedMessage =
+              role === "assistant"
+                ? enforceSingleTrailingQuestion(displayMessage)
+                : displayMessage;
+            if (normalizedMessage) {
+              setMessages((prev) => {
+                const next = [...prev, { role, content: normalizedMessage }];
+                if (role === "user") {
+                  const userMessageCount = countUserMessages(next);
+                  if (!hasStarted.current) {
+                    hasStarted.current = true;
+                    void recordInterviewEvent({
+                      eventType: "interview_started",
+                      interviewSlug: interviewConfig.slug,
+                      sessionId,
+                      shareCode: shareCode || contactRef.current?.code,
+                      messageCount: userMessageCount,
+                      metadata: {
+                        channel: "voice",
+                      },
+                    }).catch(() => {});
+                  }
+                  const currentMilestone = Math.floor(userMessageCount / 3);
+                  if (currentMilestone > userProgressMilestone.current) {
+                    userProgressMilestone.current = currentMilestone;
+                    if (currentMilestone >= 1) {
+                      void recordInterviewEvent({
+                        eventType: "interview_progressed",
+                        interviewSlug: interviewConfig.slug,
+                        sessionId,
+                        shareCode: shareCode || contactRef.current?.code,
+                        messageCount: userMessageCount,
+                        metadata: {
+                          channel: "voice",
+                          milestone: currentMilestone,
+                        },
+                      }).catch(() => {});
+                    }
+                  }
+                }
+                return next;
+              });
+            }
             if (
               msg.source === "ai" &&
-              looksLikeGoodbye &&
+              hasHardEndToken &&
               !hasTriggeredAutoEnd.current &&
               !hasHandledEnd.current
             ) {
@@ -393,39 +529,51 @@ export default function VoiceChat({
         try { activeConversation.endSession().catch(() => {}); } catch { /* ignore */ }
       }
     };
-  }, [contact?.name, contact?.context, handleEnd, sessionAttempt, stopConversation]);
+  }, [
+    contact?.name,
+    contact?.context,
+    handleEnd,
+    interviewConfig.slug,
+    sessionAttempt,
+    sessionId,
+    shareCode,
+    stopConversation,
+  ]);
 
-  const toggleMute = () => {
+  const toggleMicMute = () => {
     if (!conversationRef.current) return;
-    setIsMuted((prev) => {
+    setIsMicMuted((prev) => {
       const next = !prev;
-      if (next) {
-        conversationRef.current?.setVolume({ volume: 0 });
-      } else {
-        conversationRef.current?.setVolume({ volume: 1 });
-      }
+      conversationRef.current?.setMicMuted(next);
+      return next;
+    });
+  };
+
+  const toggleSpeakerMute = () => {
+    if (!conversationRef.current) return;
+    setIsSpeakerMuted((prev) => {
+      const next = !prev;
+      conversationRef.current?.setVolume({ volume: next ? 0 : 1 });
       return next;
     });
   };
 
   const endConversation = async () => {
     hasUserEnded.current = true;
+    hasHandledEnd.current = true;
+    const finalTranscript = messagesRef.current;
     const activeConversation = conversationRef.current;
-    if (!activeConversation) {
-      void handleEnd();
-      return;
-    }
+    conversationRef.current = null;
 
     try {
-      if (activeConversation.isOpen()) {
+      if (activeConversation?.isOpen()) {
         await activeConversation.endSession();
-      } else {
-        void handleEnd();
       }
     } catch (error) {
       console.warn("Manual endSession failed:", error);
-      void handleEnd();
     }
+
+    await completeInterview(finalTranscript);
   };
 
   const retryConnection = () => {
@@ -446,7 +594,8 @@ export default function VoiceChat({
       ? "Voice connection timed out."
       : errorMessage || "Unknown voice connection error.";
     return [
-      "network_survey_voice_debug",
+      "interviews_voice_debug",
+      `interview=${interviewConfig.slug}`,
       `transport=${lastTransportAttempt.current ?? "unknown"}`,
       `auth_mode=${lastAuthMode.current}`,
       `attempt=${sessionAttempt + 1}`,
@@ -472,7 +621,6 @@ export default function VoiceChat({
     connected: "Connected",
     speaking: "AI is speaking...",
     listening: "Listening...",
-    ended: "Conversation ended",
     error: "Connection error",
   };
 
@@ -518,9 +666,11 @@ export default function VoiceChat({
           </div>
           <div>
             <p className="text-sm font-medium text-foreground">
-              Mark's AI Assistant
+              {interviewConfig.assistantDisplayName}
             </p>
-            <p className="text-xs text-muted-foreground">Voice interview</p>
+            <p className="text-xs text-muted-foreground">
+              {interviewConfig.voiceLabel}
+            </p>
           </div>
         </div>
         <button
@@ -621,28 +771,43 @@ export default function VoiceChat({
           </div>
         )}
 
-        <div className="flex gap-3 mt-4">
-          {effectiveStatus !== "ended" &&
-            effectiveStatus !== "error" &&
+        <div className="mt-4 inline-flex items-center justify-center gap-3 self-center">
+          {effectiveStatus !== "error" &&
             effectiveStatus !== "connecting" && (
             <>
               <button
-                onClick={toggleMute}
-                className={`p-3 rounded-full transition-colors ${
-                  isMuted
+                onClick={toggleMicMute}
+                aria-label={isMicMuted ? "Unmute microphone" : "Mute microphone"}
+                className={`flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
+                  isMicMuted
                     ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
                     : "bg-secondary text-secondary-foreground hover:bg-accent"
                 }`}
               >
-                {isMuted ? (
+                {isMicMuted ? (
                   <MicOff className="w-5 h-5" />
                 ) : (
                   <Mic className="w-5 h-5" />
                 )}
               </button>
               <button
+                onClick={toggleSpeakerMute}
+                aria-label={isSpeakerMuted ? "Unmute speaker" : "Mute speaker"}
+                className={`flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
+                  isSpeakerMuted
+                    ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                    : "bg-secondary text-secondary-foreground hover:bg-accent"
+                }`}
+              >
+                {isSpeakerMuted ? (
+                  <VolumeX className="w-5 h-5" />
+                ) : (
+                  <Volume2 className="w-5 h-5" />
+                )}
+              </button>
+              <button
                 onClick={endConversation}
-                className="p-3 rounded-full bg-destructive text-white hover:bg-destructive/90 transition-colors"
+                className="flex h-12 w-12 items-center justify-center rounded-full bg-[#a85f50] text-white transition-colors hover:bg-[#925244]"
               >
                 <Phone className="w-5 h-5 rotate-[135deg]" />
               </button>

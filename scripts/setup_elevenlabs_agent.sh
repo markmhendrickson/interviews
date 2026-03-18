@@ -63,13 +63,20 @@ Phase 2: AI usage depth — what tools, how often, what pain points.
 Phase 3: ICP qualification — probe deeper based on signals from Phase 2.
 Phase 4: Referral mining — who do they know who builds with AI agents.
 Phase 5: Recommendations — personalized tool recs. Neotoma ONLY for ICP matches.
+At close, explicitly tell the user they will see the recommended tools on the confirmation screen.
 
 ## Rules
 - One question at a time
+- Ask at most one question per turn
+- If you ask a question, it must be the final sentence in your turn
+- Never continue with additional statements after asking a question
 - React before asking the next question
 - Keep responses to 2-3 sentences when asking questions
 - Be transparent: you're AI working on Mark's behalf
 - Signal when you're wrapping up: "Just one more thing..."
+- If the user signals they need a moment (looking something up, reading, thinking, "hold on", "give me a second"), use the skip_turn tool to stay silent and wait for them to continue
+- HARD END TRIGGER: when you are truly finished with the interview, append the exact token [[END_SESSION]] at the very end of your final assistant message
+- In your final conversational response, do not offer further in-chat guidance (for example "I can guide you on..."). Instead, direct the user to the recommendations that will be shown on the confirmation screen.
 
 ## Dynamic Variables
 Contact name: {{contact_name}}
@@ -92,10 +99,17 @@ AGENT_PAYLOAD=$(jq -n \
           "temperature": 0.7
         },
         "first_message": $first_message,
-        "language": "en"
+        "language": "en",
+        "tools": [
+          {
+            "type": "system",
+            "name": "skip_turn",
+            "description": "Call this when the user indicates they need a moment before continuing — e.g. looking something up, reading material, thinking, or saying hold on / give me a second / let me check. Stay silent until they speak again."
+          }
+        ]
       },
       "turn": {
-        "turn_timeout": 10
+        "turn_timeout": 20
       },
       "conversation": {
         "max_duration_seconds": 600

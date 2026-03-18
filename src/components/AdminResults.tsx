@@ -19,6 +19,7 @@ import {
   removeContact,
   type Contact,
 } from "../lib/contacts";
+import type { InterviewConfig } from "../interviews/registry";
 
 interface StoredResult {
   sessionId: string;
@@ -27,7 +28,11 @@ interface StoredResult {
   storedAt: string;
 }
 
-const ADMIN_SESSION_KEY = "network_survey_admin_passphrase";
+const LEGACY_ADMIN_SESSION_KEY = "network_survey_admin_passphrase";
+
+function getAdminSessionKey(interviewSlug: string): string {
+  return `interviews_admin_passphrase_${interviewSlug}`;
+}
 
 const TIER_LABELS: Record<string, string> = {
   tier1_infra: "Tier 1 — Infra Engineer",
@@ -251,10 +256,17 @@ function ResultDetail({
   );
 }
 
-export default function AdminResults() {
+export default function AdminResults({
+  interviewConfig,
+}: {
+  interviewConfig: InterviewConfig;
+}) {
   const [passphrase, setPassphrase] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return window.sessionStorage.getItem(ADMIN_SESSION_KEY);
+    return (
+      window.sessionStorage.getItem(getAdminSessionKey(interviewConfig.slug)) ||
+      window.sessionStorage.getItem(LEGACY_ADMIN_SESSION_KEY)
+    );
   });
   const [results, setResults] = useState<StoredResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -265,26 +277,47 @@ export default function AdminResults() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactCode, setContactCode] = useState("");
   const [contactName, setContactName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
   const [contactContext, setContactContext] = useState("");
   const [contactSource, setContactSource] = useState("manual");
   const [contactError, setContactError] = useState<string | null>(null);
 
-  const refreshContacts = useCallback(() => {
-    setContacts(listContacts());
-  }, []);
+  const refreshContacts = useCallback(async (pass: string) => {
+    try {
+      const scopedData = await listContacts(pass, interviewConfig.slug);
+      setContacts(scopedData.contacts || []);
+      setContactError(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to load contacts";
+      if (message === "Unauthorized") {
+        setPassphrase(null);
+        if (typeof window !== "undefined") {
+          window.sessionStorage.removeItem(getAdminSessionKey(interviewConfig.slug));
+          window.sessionStorage.removeItem(LEGACY_ADMIN_SESSION_KEY);
+        }
+      } else {
+        setContactError(message);
+      }
+    }
+  }, [interviewConfig.slug]);
 
   const fetchResults = useCallback(async (pass: string) => {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch("/api/results", {
+      const resp = await fetch(
+        `/api/admin?resource=results&interview=${encodeURIComponent(interviewConfig.slug)}`,
+        {
         headers: { Authorization: `Bearer ${pass}` },
-      });
+        }
+      );
       if (resp.status === 401) {
         setError("Incorrect passphrase");
         setPassphrase(null);
         if (typeof window !== "undefined") {
-          window.sessionStorage.removeItem(ADMIN_SESSION_KEY);
+          window.sessionStorage.removeItem(getAdminSessionKey(interviewConfig.slug));
+          window.sessionStorage.removeItem(LEGACY_ADMIN_SESSION_KEY);
         }
         return;
       }
@@ -295,46 +328,68 @@ export default function AdminResults() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [interviewConfig.slug]);
 
   const handleLogin = useCallback((pass: string) => {
     setPassphrase(pass);
     if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(ADMIN_SESSION_KEY, pass);
+      window.sessionStorage.setItem(getAdminSessionKey(interviewConfig.slug), pass);
+      window.sessionStorage.removeItem(LEGACY_ADMIN_SESSION_KEY);
     }
-  }, []);
+  }, [interviewConfig.slug]);
 
   useEffect(() => {
     if (passphrase) {
-      fetchResults(passphrase);
-      refreshContacts();
+      void fetchResults(passphrase);
+      void refreshContacts(passphrase);
     }
   }, [passphrase, fetchResults, refreshContacts]);
 
-  const handleAddContact = (e: React.FormEvent) => {
+  const handleAddContact = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = addOrUpdateContact({
-      code: contactCode,
-      name: contactName,
-      context: contactContext,
-      source: contactSource,
-    });
-    if (!result.ok) {
-      setContactError(result.error);
+    if (!passphrase) {
+      setContactError("Unauthorized");
       return;
     }
-
-    setContactCode("");
-    setContactName("");
-    setContactContext("");
-    setContactSource("manual");
-    setContactError(null);
-    refreshContacts();
+    try {
+      await addOrUpdateContact(
+        {
+          code: contactCode,
+          name: contactName,
+          email: contactEmail,
+          context: contactContext,
+          source: contactSource,
+        },
+        passphrase,
+        interviewConfig.slug
+      );
+      setContactCode("");
+      setContactName("");
+      setContactEmail("");
+      setContactContext("");
+      setContactSource("manual");
+      setContactError(null);
+      await refreshContacts(passphrase);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save contact";
+      setContactError(message);
+    }
   };
 
-  const handleRemoveContact = (code: string) => {
-    removeContact(code);
-    refreshContacts();
+  const handleRemoveContact = async (code: string) => {
+    if (!passphrase) {
+      setContactError("Unauthorized");
+      return;
+    }
+    try {
+      await removeContact(code, passphrase, interviewConfig.slug);
+      await refreshContacts(passphrase);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to remove contact";
+      setContactError(message);
+    }
   };
 
   const handleExport = () => {
@@ -344,7 +399,7 @@ export default function AdminResults() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `survey-results-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `${interviewConfig.slug}-results-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -368,7 +423,7 @@ export default function AdminResults() {
         <div className="flex items-center gap-3">
           <Users className="w-5 h-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold text-foreground">
-            Interview Results
+            {interviewConfig.adminTitle}
           </h1>
           <span className="text-sm text-muted-foreground">
             {results.length} interview{results.length !== 1 ? "s" : ""}
@@ -400,13 +455,19 @@ export default function AdminResults() {
               value={contactName}
               onChange={(e) => setContactName(e.target.value)}
               placeholder="Name"
+              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+            />
+            <input
+              value={contactEmail}
+              onChange={(e) => setContactEmail(e.target.value)}
+              placeholder="Email"
               className="md:col-span-3 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
             />
             <input
               value={contactContext}
               onChange={(e) => setContactContext(e.target.value)}
               placeholder="Context"
-              className="md:col-span-4 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
             />
             <input
               value={contactSource}
@@ -431,14 +492,14 @@ export default function AdminResults() {
                     {contact.code} · {contact.name}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {contact.context || "No context"} · {contact.source || "unknown"}
+                    {contact.email || "No email"} · {contact.context || "No context"} · {contact.source || "unknown"}
                   </p>
                   <a
-                    href={`/?c=${contact.code}`}
+                    href={`/${interviewConfig.slug}/${contact.code}`}
                     className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 mt-1"
                   >
                     <Link2 className="w-3 h-3" />
-                    /?c={contact.code}
+                    /{interviewConfig.slug}/{contact.code}
                   </a>
                 </div>
                 <button
