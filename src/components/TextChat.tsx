@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
 import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
+import { extractAnonymousContactIdentity } from "../lib/contact_identity";
 import { buildSystemPrompt } from "../lib/system_prompt";
 import { getInterviewOpeningMessage } from "../lib/interview_opening";
 import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
@@ -116,6 +117,8 @@ export default function TextChat({
     if (hasCompleted.current || isFinalizing) return;
     setIsFinalizing(true);
     const finalTranscript = messages.filter((m) => m.content?.trim());
+    const anonymousIdentity = extractAnonymousContactIdentity(finalTranscript);
+    const resolvedContactName = contact?.name || anonymousIdentity.name || null;
     const durationSeconds = Math.round((Date.now() - startTime) / 1000);
     let finalAssessment: Assessment;
 
@@ -126,7 +129,7 @@ export default function TextChat({
         body: JSON.stringify({
           transcript: finalTranscript,
           sessionId,
-          contactName: contact?.name,
+          contactName: resolvedContactName,
           durationSeconds,
           interviewSlug: interviewConfig.slug,
         }),
@@ -137,9 +140,15 @@ export default function TextChat({
       finalAssessment = buildFallbackAssessment({
         transcript: finalTranscript,
         sessionId,
-        contactName: contact?.name,
+          contactName: resolvedContactName,
         durationSeconds,
       });
+    }
+    if (!finalAssessment.contactName && resolvedContactName) {
+      finalAssessment.contactName = resolvedContactName;
+    }
+    if (!finalAssessment.contactEmail && anonymousIdentity.email) {
+      finalAssessment.contactEmail = anonymousIdentity.email;
     }
 
     void fetch("/api/results", {
@@ -245,12 +254,17 @@ export default function TextChat({
 
         const assessment = parseAssessment(accumulated);
         if (assessment) {
+          const anonymousIdentity = extractAnonymousContactIdentity(allMessages);
+          const resolvedContactName = contact?.name || anonymousIdentity.name || null;
           assessment.sessionId = sessionId;
           assessment.timestamp = new Date().toISOString();
           assessment.durationSeconds = Math.round(
             (Date.now() - startTime) / 1000
           );
-          if (contact?.name) assessment.contactName = contact.name;
+          if (resolvedContactName) assessment.contactName = resolvedContactName;
+          if (!assessment.contactEmail && anonymousIdentity.email) {
+            assessment.contactEmail = anonymousIdentity.email;
+          }
 
           const finalTranscript = [
             ...allMessages,

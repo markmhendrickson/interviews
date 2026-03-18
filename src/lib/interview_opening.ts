@@ -11,5 +11,5 @@ export function getInterviewOpeningMessage(
     return `Hi ${contact.name} — thanks for taking the time. ${openingLead} What do you do, and where does AI show up most for you right now — whether that's work, personal projects, or everyday life?`;
   }
 
-  return `Hi — thanks for taking the time. ${openingLead} What do you do, and where does AI show up most for you right now — whether that's work, personal projects, or everyday life?`;
+  return `Hi — thanks for taking the time. ${openingLead} Before we get into tools, who are you and what do you do?`;
 }

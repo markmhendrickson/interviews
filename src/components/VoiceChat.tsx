@@ -15,6 +15,7 @@ import { Conversation } from "@elevenlabs/client";
 import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
 import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
+import { extractAnonymousContactIdentity } from "../lib/contact_identity";
 import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
 import type { InterviewConfig } from "../interviews/registry";
 import {
@@ -151,6 +152,8 @@ export default function VoiceChat({
     async (finalTranscript: Message[]) => {
       if (hasCompleted.current) return;
       const cleanedTranscript = finalTranscript.filter((m) => m.content?.trim());
+      const anonymousIdentity = extractAnonymousContactIdentity(cleanedTranscript);
+      const resolvedContactName = contactRef.current?.name || anonymousIdentity.name || null;
       const durationSeconds = Math.round((Date.now() - startTime) / 1000);
       let assessment: Assessment;
 
@@ -161,7 +164,7 @@ export default function VoiceChat({
           body: JSON.stringify({
             transcript: cleanedTranscript,
             sessionId,
-            contactName: contactRef.current?.name,
+            contactName: resolvedContactName,
             durationSeconds,
             interviewSlug: interviewConfig.slug,
           }),
@@ -172,9 +175,15 @@ export default function VoiceChat({
         assessment = buildFallbackAssessment({
           transcript: cleanedTranscript,
           sessionId,
-          contactName: contactRef.current?.name,
+          contactName: resolvedContactName,
           durationSeconds,
         });
+      }
+      if (!assessment.contactName && resolvedContactName) {
+        assessment.contactName = resolvedContactName;
+      }
+      if (!assessment.contactEmail && anonymousIdentity.email) {
+        assessment.contactEmail = anonymousIdentity.email;
       }
 
       void fetch("/api/results", {
