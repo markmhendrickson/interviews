@@ -46,6 +46,7 @@ function scopedKey(key) {
 const CONTACT_INDEX_KEY = scopedKey("contacts:index");
 const RESULT_INDEX_KEY = scopedKey("results:index");
 const EVENT_INDEX_KEY = scopedKey("events:index");
+const SYNC_STATUS_KEY = scopedKey("sync_status");
 
 function ensureKvConfigured() {
   const url = process.env.KV_REST_API_URL;
@@ -75,6 +76,16 @@ function resultKey(sessionId) {
 
 function eventKey(eventId) {
   return scopedKey(`event:${String(eventId || "").trim()}`);
+}
+
+async function getSyncStatus() {
+  const existing = await kv.get(SYNC_STATUS_KEY);
+  return (
+    existing || {
+      interviewSlug: "ai",
+      status: "idle",
+    }
+  );
 }
 
 function createEventId() {
@@ -639,6 +650,11 @@ app.all("/api/admin", (req, res) => {
           return res.status(200).json({ events, count: events.length });
         }
 
+        if (resource === "sync") {
+          const sync = await getSyncStatus();
+          return res.status(200).json({ sync });
+        }
+
         const [sessionIds, codes] = await Promise.all([
           kv.smembers(RESULT_INDEX_KEY),
           kv.smembers(CONTACT_INDEX_KEY),
@@ -659,6 +675,7 @@ app.all("/api/admin", (req, res) => {
         return res.status(200).json({
           results,
           contacts,
+          sync: await getSyncStatus(),
           counts: { results: results.length, contacts: contacts.length },
         });
       }
@@ -692,7 +709,34 @@ app.all("/api/admin", (req, res) => {
           return await processInvite(req, res);
         }
 
-        return res.status(400).json({ error: "POST supports resource=contacts or resource=invite only" });
+        if (resource === "sync") {
+          const now = new Date().toISOString();
+          const current = await getSyncStatus();
+          const requestedStatus =
+            req.body?.status === "success" ||
+            req.body?.status === "error" ||
+            req.body?.status === "requested"
+              ? req.body.status
+              : "requested";
+          const sync = {
+            ...current,
+            interviewSlug: "ai",
+            status: requestedStatus,
+            lastRequestedAt: now,
+            ...(requestedStatus === "success"
+              ? { lastSyncedAt: String(req.body?.lastSyncedAt || now), lastError: undefined }
+              : {}),
+            ...(requestedStatus === "error"
+              ? { lastError: String(req.body?.lastError || "Sync failed") }
+              : {}),
+          };
+          await kv.set(SYNC_STATUS_KEY, sync);
+          return res.status(200).json({ ok: true, sync });
+        }
+
+        return res
+          .status(400)
+          .json({ error: "POST supports resource=contacts, resource=invite, or resource=sync only" });
       }
 
       if (req.method === "DELETE") {

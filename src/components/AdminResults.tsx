@@ -8,16 +8,16 @@ import {
   Target,
   MessageSquare,
   Star,
-  Plus,
-  Trash2,
   Link2,
+  RefreshCw,
 } from "lucide-react";
 import type { Assessment } from "../lib/assessment";
 import {
-  addOrUpdateContact,
+  getSyncStatus,
   listContacts,
-  removeContact,
+  triggerSyncNow,
   type Contact,
+  type SyncStatus,
 } from "../lib/contacts";
 import type { InterviewConfig } from "../interviews/registry";
 
@@ -275,12 +275,10 @@ export default function AdminResults({
     null
   );
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [contactCode, setContactCode] = useState("");
-  const [contactName, setContactName] = useState("");
-  const [contactEmail, setContactEmail] = useState("");
-  const [contactContext, setContactContext] = useState("");
-  const [contactSource, setContactSource] = useState("manual");
   const [contactError, setContactError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const refreshContacts = useCallback(async (pass: string) => {
     try {
@@ -330,6 +328,18 @@ export default function AdminResults({
     }
   }, [interviewConfig.slug]);
 
+  const refreshSyncStatus = useCallback(async (pass: string) => {
+    try {
+      const data = await getSyncStatus(pass, interviewConfig.slug);
+      setSyncStatus(data.sync);
+      setSyncError(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to load sync status";
+      setSyncError(message);
+    }
+  }, [interviewConfig.slug]);
+
   const handleLogin = useCallback((pass: string) => {
     setPassphrase(pass);
     if (typeof window !== "undefined") {
@@ -342,54 +352,35 @@ export default function AdminResults({
     if (passphrase) {
       void fetchResults(passphrase);
       void refreshContacts(passphrase);
+      void refreshSyncStatus(passphrase);
     }
-  }, [passphrase, fetchResults, refreshContacts]);
+  }, [passphrase, fetchResults, refreshContacts, refreshSyncStatus]);
 
-  const handleAddContact = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSyncNow = async () => {
     if (!passphrase) {
-      setContactError("Unauthorized");
+      setSyncError("Unauthorized");
       return;
     }
+    setSyncLoading(true);
     try {
-      await addOrUpdateContact(
-        {
-          code: contactCode,
-          name: contactName,
-          email: contactEmail,
-          context: contactContext,
-          source: contactSource,
-        },
-        passphrase,
-        interviewConfig.slug
-      );
-      setContactCode("");
-      setContactName("");
-      setContactEmail("");
-      setContactContext("");
-      setContactSource("manual");
-      setContactError(null);
-      await refreshContacts(passphrase);
+      const data = await triggerSyncNow(passphrase, interviewConfig.slug);
+      setSyncStatus(data.sync);
+      setSyncError(null);
+      await Promise.all([fetchResults(passphrase), refreshContacts(passphrase)]);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Failed to save contact";
-      setContactError(message);
+        error instanceof Error ? error.message : "Failed to sync now";
+      setSyncError(message);
+    } finally {
+      setSyncLoading(false);
     }
   };
 
-  const handleRemoveContact = async (code: string) => {
-    if (!passphrase) {
-      setContactError("Unauthorized");
-      return;
-    }
-    try {
-      await removeContact(code, passphrase, interviewConfig.slug);
-      await refreshContacts(passphrase);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to remove contact";
-      setContactError(message);
-    }
+  const formatDateTime = (value: string | undefined): string => {
+    if (!value) return "Not yet";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
   };
 
   const handleExport = () => {
@@ -441,52 +432,54 @@ export default function AdminResults({
 
       <div className="max-w-4xl mx-auto px-4 py-6">
         <section className="bg-card border border-border rounded-xl p-5 mb-6">
-          <h2 className="text-sm font-semibold text-foreground mb-3">
-            Contact codes
-          </h2>
-          <form onSubmit={handleAddContact} className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-4">
-            <input
-              value={contactCode}
-              onChange={(e) => setContactCode(e.target.value)}
-              placeholder="Code (e.g. sb26)"
-              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
-            />
-            <input
-              value={contactName}
-              onChange={(e) => setContactName(e.target.value)}
-              placeholder="Name"
-              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
-            />
-            <input
-              value={contactEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
-              placeholder="Email"
-              className="md:col-span-3 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
-            />
-            <input
-              value={contactContext}
-              onChange={(e) => setContactContext(e.target.value)}
-              placeholder="Context"
-              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
-            />
-            <input
-              value={contactSource}
-              onChange={(e) => setContactSource(e.target.value)}
-              placeholder="Source"
-              className="md:col-span-2 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
-            />
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Contact codes</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Read-only mirror of Neotoma contact data. Add or remove codes in Neotoma, then sync.
+              </p>
+            </div>
             <button
-              type="submit"
-              className="md:col-span-1 inline-flex items-center justify-center gap-1 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-3 py-2 transition-colors"
+              type="button"
+              onClick={handleSyncNow}
+              disabled={syncLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-secondary hover:bg-accent text-sm text-foreground px-3 py-1.5 transition-colors disabled:opacity-60"
             >
-              <Plus className="w-4 h-4" />
-              Add
+              <RefreshCw className={`w-4 h-4 ${syncLoading ? "animate-spin" : ""}`} />
+              {syncLoading ? "Syncing..." : "Sync now"}
             </button>
-          </form>
-          {contactError && <p className="text-xs text-red-500 mb-3">{contactError}</p>}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-4 text-xs">
+            <div className="rounded-lg border border-border px-3 py-2">
+              <p className="text-muted-foreground">Sync status</p>
+              <p className="text-foreground font-medium mt-0.5">
+                {syncStatus?.status || "idle"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border px-3 py-2">
+              <p className="text-muted-foreground">Last synced</p>
+              <p className="text-foreground font-medium mt-0.5">
+                {formatDateTime(syncStatus?.lastSyncedAt)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border px-3 py-2">
+              <p className="text-muted-foreground">Last sync requested</p>
+              <p className="text-foreground font-medium mt-0.5">
+                {formatDateTime(syncStatus?.lastRequestedAt)}
+              </p>
+            </div>
+          </div>
+          {(contactError || syncError || syncStatus?.lastError) && (
+            <p className="text-xs text-red-500 mb-3">
+              {contactError || syncError || syncStatus?.lastError}
+            </p>
+          )}
           <div className="space-y-2 max-h-56 overflow-y-auto">
             {contacts.map((contact) => (
-              <div key={contact.code} className="flex items-center justify-between border border-border rounded-lg px-3 py-2">
+              <div
+                key={contact.code}
+                className="flex items-center justify-between border border-border rounded-lg px-3 py-2"
+              >
                 <div>
                   <p className="text-sm font-medium text-foreground">
                     {contact.code} · {contact.name}
@@ -502,14 +495,7 @@ export default function AdminResults({
                     /{interviewConfig.slug}/{contact.code}
                   </a>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveContact(contact.code)}
-                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-red-500 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Remove
-                </button>
+                <span className="text-xs text-muted-foreground">Read-only</span>
               </div>
             ))}
           </div>

@@ -6,6 +6,14 @@ export interface Contact {
   source?: string;
 }
 
+export interface SyncStatus {
+  interviewSlug: string;
+  status: "idle" | "requested" | "success" | "error";
+  lastSyncedAt?: string;
+  lastRequestedAt?: string;
+  lastError?: string;
+}
+
 function normalizeCode(code: string): string {
   return code.trim().toLowerCase();
 }
@@ -52,6 +60,39 @@ export async function listContacts(
     throw new Error(await parseErrorMessage(response));
   }
   return (await response.json()) as { contacts: Contact[]; count: number };
+}
+
+export async function getSyncStatus(
+  passphrase: string,
+  interviewSlug = "ai"
+): Promise<{ sync: SyncStatus }> {
+  const response = await fetch(
+    `/api/admin?resource=sync&interview=${encodeURIComponent(interviewSlug)}`,
+    {
+      headers: { Authorization: `Bearer ${passphrase}` },
+    }
+  );
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response));
+  }
+  return (await response.json()) as { sync: SyncStatus };
+}
+
+export async function triggerSyncNow(
+  passphrase: string,
+  interviewSlug = "ai"
+): Promise<{ ok: true; sync: SyncStatus }> {
+  const response = await fetch(
+    `/api/admin?resource=sync&interview=${encodeURIComponent(interviewSlug)}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${passphrase}` },
+    }
+  );
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response));
+  }
+  return (await response.json()) as { ok: true; sync: SyncStatus };
 }
 
 export async function addOrUpdateContact(

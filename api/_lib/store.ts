@@ -20,6 +20,14 @@ export interface StoredResult {
   contactCode?: string;
 }
 
+export interface SyncStatus {
+  interviewSlug: string;
+  status: "idle" | "requested" | "success" | "error";
+  lastSyncedAt?: string;
+  lastRequestedAt?: string;
+  lastError?: string;
+}
+
 function getNamespace(): string {
   return (
     process.env.KV_KEY_PREFIX ||
@@ -67,6 +75,10 @@ function contactKey(code: string, interviewSlug: string): string {
 
 function resultKey(sessionId: string, interviewSlug: string): string {
   return scopedKey(`${normalizeInterviewSlug(interviewSlug)}:result:${sessionId}`);
+}
+
+function syncStatusKey(interviewSlug: string): string {
+  return scopedKey(`${normalizeInterviewSlug(interviewSlug)}:sync_status`);
 }
 
 function ensureKvConfigured(): void {
@@ -221,4 +233,35 @@ export async function removeResult(
   if (!sessionId) return;
   await kv.del(resultKey(sessionId, interviewSlug));
   await kv.srem(resultIndexKey(interviewSlug), sessionId);
+}
+
+export async function getSyncStatus(interviewSlug = "ai"): Promise<SyncStatus> {
+  ensureKvConfigured();
+  const normalized = normalizeInterviewSlug(interviewSlug);
+  const stored = await kv.get<SyncStatus>(syncStatusKey(normalized));
+  return (
+    stored ?? {
+      interviewSlug: normalized,
+      status: "idle",
+    }
+  );
+}
+
+export async function updateSyncStatus(
+  update: Partial<SyncStatus>,
+  interviewSlug = "ai"
+): Promise<SyncStatus> {
+  ensureKvConfigured();
+  const normalized = normalizeInterviewSlug(interviewSlug);
+  const current = await getSyncStatus(normalized);
+  const definedUpdates = Object.fromEntries(
+    Object.entries(update).filter(([, value]) => value !== undefined)
+  ) as Partial<SyncStatus>;
+  const next: SyncStatus = {
+    ...current,
+    ...definedUpdates,
+    interviewSlug: normalized,
+  };
+  await kv.set(syncStatusKey(normalized), next);
+  return next;
 }

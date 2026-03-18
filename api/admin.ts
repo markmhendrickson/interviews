@@ -5,14 +5,22 @@ import inviteHandler from "./invite.js";
 import {
   getContact,
   getResult,
+  getSyncStatus,
   listContacts,
   listResults,
   removeContact,
   removeResult,
+  updateSyncStatus,
   upsertContact,
 } from "./_lib/store.js";
 
-type AdminResource = "results" | "contacts" | "events" | "invite" | "overview";
+type AdminResource =
+  | "results"
+  | "contacts"
+  | "events"
+  | "invite"
+  | "overview"
+  | "sync";
 
 function getInterviewSlug(req: VercelRequest): string {
   if (typeof req.query.interview === "string") return req.query.interview;
@@ -27,7 +35,8 @@ function getResource(req: VercelRequest): AdminResource {
     raw === "contacts" ||
     raw === "events" ||
     raw === "invite" ||
-    raw === "overview"
+    raw === "overview" ||
+    raw === "sync"
   ) {
     return raw;
   }
@@ -78,16 +87,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ events, count: events.length });
       }
 
-      const [results, contacts, events] = await Promise.all([
+      if (resource === "sync") {
+        const sync = await getSyncStatus(interviewSlug);
+        return res.status(200).json({ sync });
+      }
+
+      const [results, contacts, events, sync] = await Promise.all([
         listResults(interviewSlug),
         listContacts(interviewSlug),
         listEvents(interviewSlug),
+        getSyncStatus(interviewSlug),
       ]);
       return res.status(200).json({
         interviewSlug,
         results,
         contacts,
         events,
+        sync,
         counts: { results: results.length, contacts: contacts.length, events: events.length },
       });
     }
@@ -113,7 +129,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return inviteHandler(req, res);
       }
 
-      return res.status(400).json({ error: "POST supports resource=contacts or resource=invite only" });
+      if (resource === "sync") {
+        const requestedAt = new Date().toISOString();
+        const requestedStatus =
+          req.body?.status === "success" ||
+          req.body?.status === "error" ||
+          req.body?.status === "requested"
+            ? req.body.status
+            : "requested";
+        const sync = await updateSyncStatus(
+          {
+            status: requestedStatus,
+            lastRequestedAt: requestedAt,
+            lastSyncedAt:
+              requestedStatus === "success"
+                ? String(req.body?.lastSyncedAt || requestedAt)
+                : undefined,
+            lastError:
+              requestedStatus === "error"
+                ? String(req.body?.lastError || "Sync failed")
+                : undefined,
+          },
+          interviewSlug
+        );
+        return res.status(200).json({ ok: true, sync });
+      }
+
+      return res
+        .status(400)
+        .json({ error: "POST supports resource=contacts, resource=invite, or resource=sync only" });
     }
 
     if (req.method === "DELETE") {
