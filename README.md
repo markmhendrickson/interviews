@@ -43,9 +43,14 @@ export ELEVENLABS_API_KEY=your-key
 ## Routes
 
 - `/` — Landing page for interview entry points
-- `/ai` — AI interview flow (welcome -> conversation -> recommendations)
+- `/ai` — AI interview flow (welcome → conversation)
+- `/ai/text` or `/ai/voice` — Active interview mode
+- `/ai/thanks` — Confirmation / summary (bookmarkable; requires completed session in storage)
+- `/ai/{contactCode}/thanks` — Same, with contact in path
 - `/ai?c=CODE` — Personalized interview link with contact name/context
 - `/ai/admin` — Results dashboard (passphrase-protected)
+
+After a completed interview, the app replaces the URL with `/thanks`. **Start a new conversation** returns to the welcome screen and clears that session.
 
 ## Personalized links
 
@@ -69,6 +74,7 @@ Required Vercel environment variables:
 - `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL` (optional) — if set, `Sync now` pulls contacts from this HTTP endpoint instead of running local `neotoma` CLI. Useful for tunneling to a trusted local API while the app is deployed in prod.
 - `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TOKEN` (optional) — bearer token (or raw token for custom header) sent to sync API.
 - `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_HEADER` (optional) — auth header name for sync API, defaults to `Authorization`.
+- `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_METHOD` (optional) — HTTP method for sync API call. Default `GET`; use `POST` for Neotoma `/entities/query`.
 - `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TIMEOUT_MS` (optional) — HTTP timeout for sync calls, default `15000`.
 - `INTERVIEWS_ADMIN_NEOTOMA_ENV` (optional) — used only by CLI sync path when `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL` is not set.
 - `SENDGRID_API_KEY` (for invite email delivery)

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, Loader2, Phone } from "lucide-react";
+import { Send, Mic, Loader2, Phone, ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Contact } from "../lib/contacts";
@@ -14,6 +14,7 @@ import {
   countUserMessages,
   recordInterviewEvent,
   sendAbandonBeacon,
+  upsertPartialResult,
 } from "../lib/interview_events";
 
 interface Message {
@@ -28,6 +29,7 @@ interface TextChatProps {
   onTranscriptChange: (transcript: Message[]) => void;
   onComplete: (transcript: Message[], assessment: Assessment) => void;
   onSwitchMode: () => void;
+  onReturnToStart: () => void;
   interviewConfig: InterviewConfig;
 }
 
@@ -61,6 +63,7 @@ export default function TextChat({
   onTranscriptChange,
   onComplete,
   onSwitchMode,
+  onReturnToStart,
   interviewConfig,
 }: TextChatProps) {
   const [messages, setMessages] = useState<Message[]>(initialTranscript);
@@ -425,6 +428,18 @@ export default function TextChat({
         }).catch(() => {});
       }
     }
+
+    // Persist an in-progress record immediately so admin can see active interviews.
+    void upsertPartialResult({
+      interviewSlug: interviewConfig.slug,
+      sessionId,
+      transcript: newMessages,
+      contactName: contact?.name || null,
+      contactCode: shareCode || contact?.code || undefined,
+      messageCount: userMessageCount,
+      durationSeconds: Math.round((Date.now() - startTime) / 1000),
+    }).catch(() => {});
+
     setMessages(newMessages);
     setInput("");
     streamResponse(newMessages);
@@ -454,6 +469,13 @@ export default function TextChat({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={onReturnToStart}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground bg-secondary hover:bg-accent px-3 py-1.5 rounded-full transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back to start
+          </button>
           <button
             onClick={onSwitchMode}
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground bg-secondary hover:bg-accent px-3 py-1.5 rounded-full transition-colors"

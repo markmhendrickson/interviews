@@ -216,6 +216,11 @@ async function fetchNeotomaContactsViaHttp(): Promise<Contact[]> {
   const headerName = (
     process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_HEADER || "Authorization"
   ).trim();
+  const method = (
+    process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_METHOD || "GET"
+  )
+    .trim()
+    .toUpperCase();
   const token = process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TOKEN?.trim();
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) {
@@ -227,9 +232,20 @@ async function fetchNeotomaContactsViaHttp(): Promise<Contact[]> {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
+    const body =
+      method === "POST"
+        ? JSON.stringify({
+            entity_type: "contact",
+            limit: safeLimit,
+          })
+        : undefined;
+    if (method === "POST") {
+      headers["Content-Type"] = "application/json";
+    }
     response = await fetch(url.toString(), {
-      method: "GET",
+      method,
       headers,
+      body,
       signal: controller.signal,
     });
   } catch (error) {

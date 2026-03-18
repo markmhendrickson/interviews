@@ -34,6 +34,8 @@ export interface Assessment {
   preferredAiTool?: string;
 }
 
+import { sanitizeContactIdentityName } from "../../shared/contact_identity";
+
 export interface TranscriptMessage {
   role: "user" | "assistant";
   content: string;
@@ -43,19 +45,38 @@ export function generateSessionId(): string {
   return `int_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function detectToolsUsed(text: string): string[] {
-  const haystack = text.toLowerCase();
-  const knownTools = [
-    "chatgpt",
-    "claude",
-    "gemini",
-    "cursor",
-    "copilot",
-    "perplexity",
-    "midjourney",
-    "notion ai",
-  ];
-  return knownTools.filter((tool) => haystack.includes(tool));
+interface ToolAliasMatcher {
+  label: string;
+  aliases: RegExp[];
+}
+
+const TOOL_ALIAS_MATCHERS: ToolAliasMatcher[] = [
+  { label: "ChatGPT", aliases: [/\bchatgpt\b/i, /\bopenai\b/i] },
+  {
+    label: "Claude",
+    aliases: [
+      /\bclaude\b/i,
+      // Accept common speech-to-text typo when users say "Claude Code".
+      /\bcloud code\b/i,
+      /\bclaude code\b/i,
+    ],
+  },
+  { label: "Gemini", aliases: [/\bgemini\b/i] },
+  { label: "Cursor", aliases: [/\bcursor\b/i] },
+  {
+    label: "GitHub Copilot",
+    aliases: [/\bcopilot\b/i, /\bgithub copilot\b/i],
+  },
+  { label: "Perplexity", aliases: [/\bperplexity\b/i] },
+  { label: "Midjourney", aliases: [/\bmidjourney\b/i] },
+  { label: "Notion AI", aliases: [/\bnotion ai\b/i, /\bnotion\b/i] },
+];
+
+export function detectToolsUsed(text: string): string[] {
+  const haystack = String(text || "");
+  return TOOL_ALIAS_MATCHERS.filter((matcher) =>
+    matcher.aliases.some((alias) => alias.test(haystack))
+  ).map((matcher) => matcher.label);
 }
 
 export function buildFallbackAssessment(params: {
@@ -80,7 +101,7 @@ export function buildFallbackAssessment(params: {
 
   return {
     sessionId: params.sessionId,
-    contactName: params.contactName ?? null,
+    contactName: sanitizeContactIdentityName(params.contactName ?? null),
     timestamp: new Date().toISOString(),
     durationSeconds: params.durationSeconds,
     icpTier: "none",

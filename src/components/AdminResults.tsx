@@ -13,7 +13,7 @@ import {
   RefreshCw,
   ExternalLink,
 } from "lucide-react";
-import type { Assessment } from "../lib/assessment";
+import { detectToolsUsed, type Assessment } from "../lib/assessment";
 import {
   getSyncStatus,
   listContacts,
@@ -28,6 +28,9 @@ interface StoredResult {
   assessment: Assessment;
   transcript: { role: "user" | "assistant"; content: string }[];
   storedAt: string;
+  partial?: boolean;
+  messageCount?: number;
+  contactCode?: string;
 }
 
 function isStoredResult(value: unknown): value is StoredResult {
@@ -68,11 +71,59 @@ const TIER_LABELS: Record<string, string> = {
   none: "No match",
 };
 
+const TIER_ASSESSMENT_SUMMARY: Record<string, string> = {
+  tier1_infra:
+    "This contact is in a primary direct-fit ICP segment. Tier 1 profiles are highest-priority near-term users.",
+  tier1_agent:
+    "This contact is in a primary direct-fit ICP segment. Tier 1 profiles are highest-priority near-term users.",
+  tier1_operator:
+    "This contact is in a primary direct-fit ICP segment. Tier 1 profiles are highest-priority near-term users.",
+  tier2_toolchain:
+    "This contact is a secondary-fit Toolchain Integrator. Tier 2 can still be valuable, especially for referrals and ecosystem influence.",
+  none: "This interview did not produce a confident ICP match yet.",
+};
+
+type CanonicalIcpTier = keyof typeof TIER_LABELS;
+
+function normalizeIcpTier(value: unknown): CanonicalIcpTier {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "none";
+  if (raw in TIER_LABELS) return raw as CanonicalIcpTier;
+
+  const compact = raw.replace(/[\s_-]+/g, "");
+  if (compact === "tier1infra" || compact === "infrastructureengineer") {
+    return "tier1_infra";
+  }
+  if (compact === "tier1agent" || compact === "agentbuilder") {
+    return "tier1_agent";
+  }
+  if (
+    compact === "tier1ainativeoperator" ||
+    compact === "tier1operator" ||
+    compact === "ainativeoperator"
+  ) {
+    return "tier1_operator";
+  }
+  if (
+    compact === "tier2" ||
+    compact === "tier2toolchain" ||
+    compact === "toolchainintegrator"
+  ) {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
 const REFERRAL_COLORS: Record<string, string> = {
   high: "text-green-600 bg-green-50",
   medium: "text-yellow-600 bg-yellow-50",
   low: "text-muted-foreground bg-secondary",
 };
+
+const INTERVIEW_STATUS_COLORS = {
+  in_progress: "text-blue-700 bg-blue-50",
+  completed: "text-green-700 bg-green-50",
+} as const;
 
 interface ContactWithCodes {
   id: string;
@@ -81,10 +132,62 @@ interface ContactWithCodes {
   context?: string;
   source?: string;
   codes: string[];
+  invited: boolean;
+}
+
+interface ContactLifecycleSession {
+  sessionId: string;
+  status: "in_progress" | "completed";
+  timestamp?: string;
+  matchConfidence: number;
+}
+
+interface ContactLifecycleMetrics {
+  invitedCount: number;
+  startedCount: number;
+  inProgressCount: number;
+  completedCount: number;
+  startRate: number;
+  completionRateFromStarted: number;
+  completionRateFromInvited: number;
+  sessions: ContactLifecycleSession[];
 }
 
 function normalizeText(value: string | undefined): string {
   return String(value || "").trim().toLowerCase();
+}
+
+function inferContactInvited(contact: Contact): boolean {
+  const record = contact as Contact & Record<string, unknown>;
+  if (typeof record.invited === "boolean") return record.invited;
+  if (typeof record.invitedAt === "string" && record.invitedAt.trim()) return true;
+
+  const rawStatus = [
+    record.inviteStatus,
+    record.invitationStatus,
+    record.lifecycleStatus,
+    record.lifecycleStage,
+    record.status,
+  ]
+    .find((value) => typeof value === "string")
+    ?.toString();
+  const status = normalizeText(rawStatus);
+  if (status) {
+    const invitedStatuses = new Set([
+      "invited",
+      "invite_sent",
+      "invite-sent",
+      "sent",
+      "opened",
+      "started",
+      "in_progress",
+      "in-progress",
+      "completed",
+    ]);
+    return invitedStatuses.has(status);
+  }
+
+  return false;
 }
 
 function collectContactCodes(contact: Contact): string[] {
@@ -116,6 +219,7 @@ function buildContactRows(contacts: Contact[]): ContactWithCodes[] {
         context: contact.context,
         source: contact.source,
         codes: nextCodes,
+        invited: inferContactInvited(contact),
       });
       continue;
     }
@@ -127,9 +231,212 @@ function buildContactRows(contacts: Contact[]): ContactWithCodes[] {
     if (!existing.context && contact.context) existing.context = contact.context;
     if (!existing.source && contact.source) existing.source = contact.source;
     if (existing.name === "Unnamed contact" && contact.name) existing.name = contact.name;
+    existing.invited = existing.invited || inferContactInvited(contact);
   }
 
   return Array.from(rowsByKey.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function normalizeCode(value: string | undefined): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isInterviewInProgress(result: StoredResult): boolean {
+  const summary = String(result.assessment?.personSummary || "").trim().toLowerCase();
+  const referralNotes = String(result.assessment?.referralNotes || "").trim().toLowerCase();
+  return (
+    result.partial === true ||
+    summary === "interview in progress." ||
+    referralNotes.includes("not completed yet")
+  );
+}
+
+function calculateRate(numerator: number, denominator: number): number {
+  if (denominator <= 0) return 0;
+  return Math.round((numerator / denominator) * 100);
+}
+
+function buildContactLifecycleMetrics(
+  contact: ContactWithCodes,
+  results: StoredResult[]
+): ContactLifecycleMetrics {
+  const contactCodes = new Set(contact.codes.map((code) => normalizeCode(code)));
+  const linked = results
+    .filter((result) => contactCodes.has(normalizeCode(result.contactCode)))
+    .sort(
+      (a, b) =>
+        toTimestampMs(b.assessment?.timestamp) - toTimestampMs(a.assessment?.timestamp)
+    );
+
+  const sessions: ContactLifecycleSession[] = linked.map((result) => ({
+    sessionId: result.sessionId,
+    status: isInterviewInProgress(result) ? "in_progress" : "completed",
+    timestamp: result.assessment?.timestamp,
+    matchConfidence: Number(result.assessment?.matchConfidence || 0),
+  }));
+
+  const invitedCount = contact.codes.length;
+  const startedCount = sessions.length;
+  const inProgressCount = sessions.filter((session) => session.status === "in_progress").length;
+  const completedCount = sessions.filter((session) => session.status === "completed").length;
+
+  return {
+    invitedCount,
+    startedCount,
+    inProgressCount,
+    completedCount,
+    startRate: calculateRate(startedCount, invitedCount),
+    completionRateFromStarted: calculateRate(completedCount, startedCount),
+    completionRateFromInvited: calculateRate(completedCount, invitedCount),
+    sessions,
+  };
+}
+
+function getMostAdvancedLifecycleStatus(
+  lifecycle: ContactLifecycleMetrics,
+  invited: boolean
+): { label: string; className: string } {
+  if (lifecycle.completedCount > 0) {
+    return { label: "Completed", className: "text-green-700 bg-green-50" };
+  }
+  if (lifecycle.inProgressCount > 0) {
+    return { label: "In progress", className: "text-blue-700 bg-blue-50" };
+  }
+  if (lifecycle.startedCount > 0) {
+    return { label: "Started", className: "text-yellow-700 bg-yellow-50" };
+  }
+  if (invited) {
+    return { label: "Invited", className: "text-indigo-700 bg-indigo-50" };
+  }
+  return { label: "Uninvited", className: "text-muted-foreground bg-secondary" };
+}
+
+function ContactDetail({
+  contact,
+  interviewSlug,
+  results,
+  onBack,
+  onOpenSession,
+}: {
+  contact: ContactWithCodes;
+  interviewSlug: string;
+  results: StoredResult[];
+  onBack: () => void;
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const lifecycle = buildContactLifecycleMetrics(contact, results);
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-6">
+      <button
+        onClick={onBack}
+        className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
+      >
+        <ArrowLeft className="w-4 h-4" />
+        Back to contacts
+      </button>
+
+      <div className="bg-card border border-border rounded-xl p-5 mb-6">
+        <h2 className="text-lg font-semibold text-foreground">{contact.name}</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          {contact.email || "No email"} · {contact.context || "No context"} ·{" "}
+          {contact.source || "unknown"}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {contact.codes.map((code) => (
+            <a
+              key={`${contact.id}:${code}`}
+              href={`/${interviewSlug}/${code}`}
+              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-primary hover:text-primary/80 hover:border-primary/40"
+            >
+              <Link2 className="w-3 h-3" />
+              {code}
+            </a>
+          ))}
+        </div>
+      </div>
+
+      <section className="bg-card border border-border rounded-xl p-5 mb-6">
+        <h3 className="text-sm font-semibold text-foreground mb-3">
+          Pipeline conversion by lifecycle
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-4">
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Invited</p>
+            <p className="text-foreground font-medium mt-0.5">{lifecycle.invitedCount}</p>
+          </div>
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Started</p>
+            <p className="text-foreground font-medium mt-0.5">{lifecycle.startedCount}</p>
+          </div>
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">In progress</p>
+            <p className="text-foreground font-medium mt-0.5">{lifecycle.inProgressCount}</p>
+          </div>
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Completed</p>
+            <p className="text-foreground font-medium mt-0.5">{lifecycle.completedCount}</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Invite → start</p>
+            <p className="text-foreground font-medium mt-0.5">{lifecycle.startRate}%</p>
+          </div>
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Start → complete</p>
+            <p className="text-foreground font-medium mt-0.5">
+              {lifecycle.completionRateFromStarted}%
+            </p>
+          </div>
+          <div className="rounded-lg border border-border px-3 py-2">
+            <p className="text-muted-foreground">Invite → complete</p>
+            <p className="text-foreground font-medium mt-0.5">
+              {lifecycle.completionRateFromInvited}%
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-card border border-border rounded-xl p-5">
+        <h3 className="text-sm font-semibold text-foreground mb-3">Interview sessions</h3>
+        {lifecycle.sessions.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No sessions have started for this contact yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {lifecycle.sessions.map((session) => (
+              <button
+                key={session.sessionId}
+                type="button"
+                onClick={() => onOpenSession(session.sessionId)}
+                className="w-full text-left border border-border rounded-lg px-3 py-2 hover:bg-secondary/40 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{session.sessionId}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {formatDateOnly(session.timestamp)} · {session.matchConfidence}% confidence
+                    </p>
+                  </div>
+                  <span
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      session.status === "completed"
+                        ? INTERVIEW_STATUS_COLORS.completed
+                        : INTERVIEW_STATUS_COLORS.in_progress
+                    }`}
+                  >
+                    {session.status === "completed" ? "Completed" : "In progress"}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function LoginForm({ onLogin }: { onLogin: (passphrase: string) => void }) {
@@ -207,6 +514,24 @@ function ResultDetail({
         (rec) => rec.tool?.trim() || rec.relevance?.trim() || rec.nextStep?.trim()
       )
     : [];
+  const transcriptToolMentions = detectToolsUsed(
+    transcript
+      .filter((msg) => msg.role === "user")
+      .map((msg) => msg.content)
+      .join(" ")
+  );
+  const toolsUsed = Array.from(new Set([...(a.toolsUsed || []), ...transcriptToolMentions]));
+  const normalizedIcpTier = normalizeIcpTier(a.icpTier);
+  const isTier1Match = normalizedIcpTier.startsWith("tier1_");
+  const isTier2Match = normalizedIcpTier === "tier2_toolchain";
+  const isInProgress =
+    result.partial === true ||
+    a.personSummary.trim().toLowerCase() === "interview in progress." ||
+    a.referralNotes.trim().toLowerCase().includes("not completed yet");
+  const interviewStatus = isInProgress ? "In progress" : "Completed";
+  const interviewStatusColor = isInProgress
+    ? INTERVIEW_STATUS_COLORS.in_progress
+    : INTERVIEW_STATUS_COLORS.completed;
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 text-foreground">
@@ -230,14 +555,21 @@ function ResultDetail({
         </div>
         <div className="flex gap-2">
           <span
+            className={`text-xs font-medium px-2.5 py-1 rounded-full ${interviewStatusColor}`}
+          >
+            {interviewStatus}
+          </span>
+          {normalizedIcpTier !== "none" && (
+          <span
             className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-              a.icpTier !== "none"
+              normalizedIcpTier !== "none"
                 ? "bg-primary/10 text-primary"
                 : "bg-secondary text-muted-foreground"
             }`}
           >
-            {TIER_LABELS[a.icpTier] || a.icpTier}
+            {TIER_LABELS[normalizedIcpTier]}
           </span>
+          )}
           <span
             className={`text-xs font-medium px-2.5 py-1 rounded-full ${REFERRAL_COLORS[a.referralPotential]}`}
           >
@@ -247,6 +579,55 @@ function ResultDetail({
       </div>
 
       <div className="space-y-6">
+        {normalizedIcpTier !== "none" && (
+          <section className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-foreground mb-2">Tier assessment</h2>
+            <p className="text-sm text-muted-foreground mb-3">
+              {TIER_ASSESSMENT_SUMMARY[normalizedIcpTier]}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div
+                className={`rounded-lg border p-3 ${
+                  isTier1Match
+                    ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border"
+                }`}
+              >
+                <p className="font-medium text-foreground mb-1 flex items-center gap-2">
+                  Tier 1 (primary fit)
+                  {isTier1Match && (
+                    <span className="text-[10px] font-semibold uppercase tracking-wide bg-primary/15 text-primary px-1.5 py-0.5 rounded">
+                      Current match
+                    </span>
+                  )}
+                </p>
+                <p className="text-muted-foreground">
+                  Direct-fit ICPs with strongest near-term adoption potential: Infra Engineer, Agent Builder, and AI-native Operator.
+                </p>
+              </div>
+              <div
+                className={`rounded-lg border p-3 ${
+                  isTier2Match
+                    ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border"
+                }`}
+              >
+                <p className="font-medium text-foreground mb-1 flex items-center gap-2">
+                  Tier 2 (secondary fit)
+                  {isTier2Match && (
+                    <span className="text-[10px] font-semibold uppercase tracking-wide bg-primary/15 text-primary px-1.5 py-0.5 rounded">
+                      Current match
+                    </span>
+                  )}
+                </p>
+                <p className="text-muted-foreground">
+                  Toolchain Integrators who are useful for ecosystem leverage and referrals, but usually lower direct-priority than Tier 1.
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
         <section className="bg-card border border-border rounded-xl p-5">
           <h2 className="text-sm font-semibold text-foreground mb-2">Summary</h2>
           <p className="text-sm text-muted-foreground">{a.personSummary}</p>
@@ -274,7 +655,7 @@ function ResultDetail({
             <div>
               <p className="text-muted-foreground text-xs mb-1">Tools used</p>
               <div className="flex flex-wrap gap-1">
-                {a.toolsUsed.map((t, i) => (
+                {toolsUsed.map((t, i) => (
                   <span
                     key={i}
                     className="text-xs bg-secondary text-muted-foreground px-2 py-0.5 rounded"
@@ -282,6 +663,9 @@ function ResultDetail({
                     {t}
                   </span>
                 ))}
+                {toolsUsed.length === 0 && (
+                  <span className="text-xs text-muted-foreground">None detected yet</span>
+                )}
               </div>
             </div>
           </div>
@@ -446,10 +830,12 @@ function ResultDetail({
 export default function AdminResults({
   interviewConfig,
   selectedSessionId,
+  selectedContactId,
   adminView = "interviews",
 }: {
   interviewConfig: InterviewConfig;
   selectedSessionId?: string | null;
+  selectedContactId?: string | null;
   adminView?: "interviews" | "codes";
 }) {
   const navigate = useNavigate();
@@ -508,8 +894,12 @@ export default function AdminResults({
     }
   }, [interviewConfig.slug]);
 
-  const fetchResults = useCallback(async (pass: string) => {
-    setLoading(true);
+  const fetchResults = useCallback(
+    async (pass: string, options?: { showLoading?: boolean }) => {
+      const showLoading = options?.showLoading ?? false;
+      if (showLoading) {
+        setLoading(true);
+      }
     setError(null);
     try {
       const resp = await fetch(
@@ -533,9 +923,13 @@ export default function AdminResults({
     } catch {
       setError("Failed to load results");
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
-  }, [interviewConfig.slug]);
+    },
+    [interviewConfig.slug]
+  );
 
   const refreshSyncStatus = useCallback(async (pass: string) => {
     try {
@@ -562,11 +956,24 @@ export default function AdminResults({
       if (isCodesView) {
         void refreshContacts(passphrase);
         void refreshSyncStatus(passphrase);
-      } else {
         void fetchResults(passphrase);
+      } else {
+        void fetchResults(passphrase, { showLoading: true });
       }
     }
   }, [passphrase, fetchResults, isCodesView, refreshContacts, refreshSyncStatus]);
+
+  useEffect(() => {
+    if (!passphrase || isCodesView) return;
+
+    const intervalId = window.setInterval(() => {
+      void fetchResults(passphrase);
+    }, 3000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [passphrase, isCodesView, fetchResults]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -588,6 +995,7 @@ export default function AdminResults({
       setSyncStatus(data.sync);
       setSyncError(null);
       await refreshContacts(passphrase);
+      await fetchResults(passphrase);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to sync now";
@@ -612,6 +1020,15 @@ export default function AdminResults({
       ? "Failed"
       : formatDateTime(syncStatus?.lastSyncedAt);
   const lastRequestedLabel = formatDateTime(syncStatus?.lastRequestedAt);
+  const selectedContact =
+    isCodesView && selectedContactId
+      ? contactRows.find((contact) => contact.id === selectedContactId) || null
+      : null;
+  const contactLifecycleById = isCodesView
+    ? new Map<string, ContactLifecycleMetrics>(
+        contactRows.map((contact) => [contact.id, buildContactLifecycleMetrics(contact, results)])
+      )
+    : new Map<string, ContactLifecycleMetrics>();
 
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(results, null, 2)], {
@@ -637,6 +1054,20 @@ export default function AdminResults({
           setSelectedResult(null);
           navigate(`/${interviewConfig.slug}/admin`);
         }}
+      />
+    );
+  }
+
+  if (selectedContact) {
+    return (
+      <ContactDetail
+        contact={selectedContact}
+        interviewSlug={interviewConfig.slug}
+        results={results}
+        onBack={() => navigate(`/${interviewConfig.slug}/admin/codes`)}
+        onOpenSession={(sessionId) =>
+          navigate(`/${interviewConfig.slug}/admin/${encodeURIComponent(sessionId)}`)
+        }
       />
     );
   }
@@ -742,9 +1173,30 @@ export default function AdminResults({
                 <p className="text-xs text-muted-foreground">No contacts available yet.</p>
               )}
               {contactRows.map((contact) => (
+                (() => {
+                  const lifecycle = contactLifecycleById.get(contact.id);
+                  const status = lifecycle
+                    ? getMostAdvancedLifecycleStatus(lifecycle, contact.invited)
+                    : { label: "Uninvited", className: "text-muted-foreground bg-secondary" };
+                  return (
                 <div
                   key={contact.id}
-                  className="border border-border rounded-lg px-3 py-2"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() =>
+                    navigate(
+                      `/${interviewConfig.slug}/admin/codes/${encodeURIComponent(contact.id)}`
+                    )
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      navigate(
+                        `/${interviewConfig.slug}/admin/codes/${encodeURIComponent(contact.id)}`
+                      );
+                    }
+                  }}
+                  className="border border-border rounded-lg px-3 py-2 cursor-pointer hover:bg-secondary/30 transition-colors"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -753,13 +1205,23 @@ export default function AdminResults({
                         {contact.email || "No email"} · {contact.context || "No context"} · {contact.source || "unknown"}
                       </p>
                     </div>
-                    <span className="text-xs text-muted-foreground">Read-only</span>
+                    <div className="text-right">
+                      <span className="text-xs text-muted-foreground">Read-only</span>
+                      <div className="mt-1">
+                        <span
+                          className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${status.className}`}
+                        >
+                          {status.label}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {contact.codes.map((code) => (
                       <a
                         key={`${contact.id}:${code}`}
                         href={`/${interviewConfig.slug}/${code}`}
+                        onClick={(event) => event.stopPropagation()}
                         className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-primary hover:text-primary/80 hover:border-primary/40"
                       >
                         <Link2 className="w-3 h-3" />
@@ -768,6 +1230,8 @@ export default function AdminResults({
                     ))}
                   </div>
                 </div>
+                  );
+                })()
               ))}
             </div>
           </section>
@@ -822,52 +1286,56 @@ export default function AdminResults({
                       toTimestampMs(a?.assessment?.timestamp)
                   )
                   .map((result) => (
-                    <tr
-                      key={result.sessionId}
-                      onClick={() => {
-                        setSelectedResult(result);
-                        navigate(
-                          `/${interviewConfig.slug}/admin/${encodeURIComponent(result.sessionId)}`
-                        );
-                      }}
-                      className="border-b border-border hover:bg-secondary/40 cursor-pointer transition-colors"
-                    >
-                      <td className="px-4 py-3 text-sm font-medium text-foreground">
-                        {result.assessment.contactName || "Anonymous"}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDateOnly(result.assessment.timestamp)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                            result.assessment.icpTier !== "none"
-                              ? "bg-primary/10 text-primary"
-                              : "bg-secondary text-muted-foreground"
-                          }`}
+                    (() => {
+                      const normalizedTier = normalizeIcpTier(result.assessment.icpTier);
+                      return (
+                        <tr
+                          key={result.sessionId}
+                          onClick={() => {
+                            setSelectedResult(result);
+                            navigate(
+                              `/${interviewConfig.slug}/admin/${encodeURIComponent(result.sessionId)}`
+                            );
+                          }}
+                          className="border-b border-border hover:bg-secondary/40 cursor-pointer transition-colors"
                         >
-                          {TIER_LABELS[result.assessment.icpTier] ||
-                            result.assessment.icpTier}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {result.assessment.matchConfidence}%
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                            REFERRAL_COLORS[
-                              result.assessment.referralPotential
-                            ]
-                          }`}
-                        >
-                          {result.assessment.referralPotential}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                      </td>
-                    </tr>
+                          <td className="px-4 py-3 text-sm font-medium text-foreground">
+                            {result.assessment.contactName || "Anonymous"}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-muted-foreground">
+                            {formatDateOnly(result.assessment.timestamp)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                normalizedTier !== "none"
+                                  ? "bg-primary/10 text-primary"
+                                  : "bg-secondary text-muted-foreground"
+                              }`}
+                            >
+                              {TIER_LABELS[normalizedTier]}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-muted-foreground">
+                            {result.assessment.matchConfidence}%
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                REFERRAL_COLORS[
+                                  result.assessment.referralPotential
+                                ]
+                              }`}
+                            >
+                              {result.assessment.referralPotential}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                          </td>
+                        </tr>
+                      );
+                    })()
                   ))}
               </tbody>
             </table>

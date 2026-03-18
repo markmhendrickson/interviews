@@ -16,12 +16,14 @@ import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
 import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
 import { extractAnonymousContactIdentity } from "../lib/contact_identity";
+
 import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
 import type { InterviewConfig } from "../interviews/registry";
 import {
   countUserMessages,
   recordInterviewEvent,
   sendAbandonBeacon,
+  upsertPartialResult,
 } from "../lib/interview_events";
 
 interface Message {
@@ -33,6 +35,7 @@ interface VoiceChatProps {
   contact: Contact | null;
   shareCode?: string | null;
   transcript: Message[];
+  resumeFromTranscript?: boolean;
   onTranscriptChange: (transcript: Message[]) => void;
   onComplete: (transcript: Message[], assessment: Assessment) => void;
   onSwitchMode: () => void;
@@ -40,6 +43,20 @@ interface VoiceChatProps {
 }
 
 type VoiceStatus = "connecting" | "connected" | "speaking" | "listening" | "error";
+
+function buildResumeContext(messages: Message[]): string {
+  const meaningfulMessages = messages
+    .filter((m) => m.content?.trim())
+    .slice(-8)
+    .map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content.trim()}`);
+  if (meaningfulMessages.length === 0) return "";
+  return [
+    "Resume an in-progress interview.",
+    "Do not re-introduce yourself or restart the interview.",
+    "Continue naturally from the latest context below:",
+    meaningfulMessages.join("\n"),
+  ].join("\n");
+}
 
 function extractAgentId(rawValue: string): string {
   if (!rawValue) return "";
@@ -65,11 +82,57 @@ const AGENT_ID_LOOKS_MALFORMED =
     RAW_AGENT_ENV.includes("?"));
 
 const HARD_END_SESSION_TOKEN = "[[END_SESSION]]";
+const RESUME_VERBALIZE_PROMPT_TOKEN = "[[RESUME_VERBALIZE_LAST_AI_TURN]]";
+
+
+function getReplayAssistantExcerpt(messages: Message[]): string | null {
+  const lastAssistantMessage = [...messages]
+    .reverse()
+    .find((item) => item.role === "assistant" && item.content?.trim())?.content;
+  if (!lastAssistantMessage) return null;
+  const normalized = lastAssistantMessage.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return normalized.slice(0, 400);
+}
+
+function buildResumeVerbalizePrompt(replayExcerpt: string): string {
+  return `${RESUME_VERBALIZE_PROMPT_TOKEN} Please say your latest assistant response out loud first. Use this exact response once: "${replayExcerpt}". Then continue naturally from there with one concise follow-up question.`;
+}
+
+function normalizeReplayCompare(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/["'`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSameReplayTurn(incoming: string, expected: string): boolean {
+  const a = normalizeReplayCompare(incoming);
+  const b = normalizeReplayCompare(expected);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const nearPrefix = a.startsWith(b) || b.startsWith(a);
+  return nearPrefix && Math.abs(a.length - b.length) <= 30;
+}
+
+function isLikelyRestartIntroMessage(message: string): boolean {
+  const s = String(message || "").trim().toLowerCase();
+  if (!s) return false;
+  return (
+    /thanks for taking the time/.test(s) ||
+    /before we get into tools/.test(s) ||
+    /what'?s your name\??$/.test(s) ||
+    /where does ai come in for you\??$/.test(s) ||
+    /^hi[!,. ]/.test(s)
+  );
+}
 
 export default function VoiceChat({
   contact,
   shareCode,
   transcript: initialTranscript,
+  resumeFromTranscript = false,
   onTranscriptChange,
   onComplete,
   onSwitchMode,
@@ -95,9 +158,10 @@ export default function VoiceChat({
   const hasConnectTimedOut = useRef(false);
   const hasTerminalError = useRef(false);
   const hasTriggeredAutoEnd = useRef(false);
+  const isSwitchingMode = useRef(false);
+  const hasRequestedSessionClose = useRef(false);
   const hasStarted = useRef(false);
   const hasSentAbandon = useRef(false);
-  const hasSuppressedInitialReplayMessage = useRef(false);
   const userProgressMilestone = useRef(0);
   const connectFailSafeTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -106,11 +170,29 @@ export default function VoiceChat({
   const lastTransportAttempt = useRef<"websocket" | "webrtc" | null>(null);
   const lastAuthMode = useRef<"signed_url" | "agent_id">("agent_id");
   const [clockTick, setClockTick] = useState(Date.now());
-  const shouldResumeFromTranscript = initialTranscript.length > 0;
+  const shouldResumeFromTranscript =
+    resumeFromTranscript &&
+    initialTranscript.some(
+      (item) => item.role === "user" && Boolean(item.content?.trim())
+    );
+  const isSpeakerMutedRef = useRef(isSpeakerMuted);
+  const isResumeAudioGuardActive = useRef(false);
+  const resumeStartedAtRef = useRef<number | null>(null);
+  const expectedReplayAssistantMessageRef = useRef<string | null>(null);
+  const resumeAudioUnmuteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastIncomingMessageRef = useRef<{
+    role: "user" | "assistant";
+    content: string;
+    receivedAt: number;
+  } | null>(null);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    isSpeakerMutedRef.current = isSpeakerMuted;
+  }, [isSpeakerMuted]);
 
   useEffect(() => {
     onTranscriptChange(messages);
@@ -137,18 +219,32 @@ export default function VoiceChat({
     }
   };
 
-  const stopConversation = useCallback(async () => {
-    const activeConversation = conversationRef.current;
-    conversationRef.current = null;
-    if (!activeConversation) return;
+  const clearResumeAudioUnmuteTimer = () => {
+    if (resumeAudioUnmuteTimer.current) {
+      clearTimeout(resumeAudioUnmuteTimer.current);
+      resumeAudioUnmuteTimer.current = null;
+    }
+  };
+
+  const requestSessionClose = useCallback(async (session: Conversation | null) => {
+    if (!session) return;
+    if (hasRequestedSessionClose.current) return;
+    hasRequestedSessionClose.current = true;
     try {
-      if (activeConversation.isOpen()) {
-        await activeConversation.endSession();
+      if (session.isOpen()) {
+        await session.endSession();
       }
     } catch (error) {
       console.warn("Failed to end active voice session:", error);
     }
   }, []);
+
+  const stopConversation = useCallback(async () => {
+    const activeConversation = conversationRef.current;
+    conversationRef.current = null;
+    if (!activeConversation) return;
+    await requestSessionClose(activeConversation);
+  }, [requestSessionClose]);
 
   const completeInterview = useCallback(
     async (finalTranscript: Message[]) => {
@@ -277,7 +373,12 @@ export default function VoiceChat({
     hasConnectTimedOut.current = false;
     hasTerminalError.current = false;
     hasTriggeredAutoEnd.current = false;
-    hasSuppressedInitialReplayMessage.current = false;
+    isSwitchingMode.current = false;
+    hasRequestedSessionClose.current = false;
+    isResumeAudioGuardActive.current = false;
+    resumeStartedAtRef.current = null;
+    expectedReplayAssistantMessageRef.current = null;
+    clearResumeAudioUnmuteTimer();
     connectingSince.current = Date.now();
 
     async function startVoice() {
@@ -339,6 +440,7 @@ export default function VoiceChat({
           }) => {
             if (cancelled) return;
             if (isUnmounting.current) return;
+            if (isSwitchingMode.current) return;
             if (hasTerminalError.current) return;
             const disconnectText = `${details?.message ?? ""} ${details?.closeReason ?? ""}`.toLowerCase();
             if (details?.reason === "error" && /quota|limit|billing|payment/.test(disconnectText)) {
@@ -347,6 +449,17 @@ export default function VoiceChat({
               setStatus("error");
               setErrorMessage(
                 "Voice service quota reached for this ElevenLabs account. Add credits or raise limits, then retry voice."
+              );
+              return;
+            }
+            // Do not finalize interview on startup/transport disconnect if no
+            // user content exists yet; keep user on voice screen with error state.
+            if (countUserMessages(messagesRef.current) === 0) {
+              hasTerminalError.current = true;
+              clearConnectFailSafe();
+              setStatus("error");
+              setErrorMessage(
+                "Voice disconnected before interview content was captured. Please retry voice or switch to text."
               );
               return;
             }
@@ -362,14 +475,33 @@ export default function VoiceChat({
           onMessage: (msg: { source: "user" | "ai"; message: string }) => {
             if (cancelled) return;
             if (
+              msg.source === "user" &&
+              String(msg.message || "").includes(RESUME_VERBALIZE_PROMPT_TOKEN)
+            ) {
+              return;
+            }
+            if (
               shouldResumeFromTranscript &&
               msg.source === "ai" &&
-              !hasSuppressedInitialReplayMessage.current
+              isResumeAudioGuardActive.current
             ) {
-              // On text->voice resume, ignore the agent's default opener so the
-              // conversation continues from existing transcript context.
-              hasSuppressedInitialReplayMessage.current = true;
-              return;
+              // During resume, drop only clear restart-intro turns.
+              // If the first AI turn is genuine continuation, unmute and keep it.
+              const resumedMessage = enforceSingleTrailingQuestion(
+                String(msg.message || "")
+              );
+              if (
+                resumedMessage &&
+                isLikelyRestartIntroMessage(resumedMessage)
+              ) {
+                return;
+              }
+              isResumeAudioGuardActive.current = false;
+              clearResumeAudioUnmuteTimer();
+              const convo = conversationRef.current;
+              if (!isSpeakerMutedRef.current && convo?.isOpen()) {
+                convo.setVolume({ volume: 1 });
+              }
             }
             const rawMessage = String(msg.message || "");
             const hasHardEndToken =
@@ -385,7 +517,54 @@ export default function VoiceChat({
               role === "assistant"
                 ? enforceSingleTrailingQuestion(displayMessage)
                 : displayMessage;
+            if (
+              role === "assistant" &&
+              expectedReplayAssistantMessageRef.current &&
+              isSameReplayTurn(
+                normalizedMessage,
+                expectedReplayAssistantMessageRef.current
+              )
+            ) {
+              expectedReplayAssistantMessageRef.current = null;
+              return;
+            }
+            const isResumeWindowActive =
+              shouldResumeFromTranscript &&
+              Boolean(resumeStartedAtRef.current) &&
+              Date.now() - (resumeStartedAtRef.current || 0) < 10000;
+            if (
+              role === "assistant" &&
+              isResumeWindowActive &&
+              normalizedMessage
+            ) {
+              const duplicateAssistantTurn = messagesRef.current.some(
+                (item) =>
+                  item.role === "assistant" &&
+                  item.content?.trim() === normalizedMessage.trim()
+              );
+              if (
+                duplicateAssistantTurn ||
+                isLikelyRestartIntroMessage(normalizedMessage)
+              ) {
+                return;
+              }
+            }
             if (normalizedMessage) {
+              const now = Date.now();
+              const lastIncomingMessage = lastIncomingMessageRef.current;
+              if (
+                lastIncomingMessage &&
+                lastIncomingMessage.role === role &&
+                lastIncomingMessage.content === normalizedMessage &&
+                now - lastIncomingMessage.receivedAt < 2000
+              ) {
+                return;
+              }
+              lastIncomingMessageRef.current = {
+                role,
+                content: normalizedMessage,
+                receivedAt: now,
+              };
               setMessages((prev) => {
                 const next = [...prev, { role, content: normalizedMessage }];
                 if (role === "user") {
@@ -420,6 +599,17 @@ export default function VoiceChat({
                       }).catch(() => {});
                     }
                   }
+
+                  // Persist in-progress sessions so admin can see them immediately.
+                  void upsertPartialResult({
+                    interviewSlug: interviewConfig.slug,
+                    sessionId,
+                    transcript: next,
+                    contactName: contactRef.current?.name || null,
+                    contactCode: shareCode || contactRef.current?.code || undefined,
+                    messageCount: userMessageCount,
+                    durationSeconds: Math.round((Date.now() - startTime) / 1000),
+                  }).catch(() => {});
                 }
                 return next;
               });
@@ -432,13 +622,10 @@ export default function VoiceChat({
             ) {
               hasTriggeredAutoEnd.current = true;
               const activeConversation = conversationRef.current;
-              if (activeConversation?.isOpen()) {
-                void activeConversation
-                  .endSession()
-                  .catch(() => {})
-                  .finally(() => {
-                    void handleEnd();
-                  });
+              if (activeConversation) {
+                void requestSessionClose(activeConversation).finally(() => {
+                  void handleEnd();
+                });
               } else {
                 void handleEnd();
               }
@@ -447,10 +634,20 @@ export default function VoiceChat({
           onError: (message: string) => {
             const normalizedMessage = String(message || "");
             if (cancelled) return;
+            const isClosedStateError = /CLOSING or CLOSED state/i.test(
+              normalizedMessage
+            );
+            const isExpectedTeardown =
+              isUnmounting.current ||
+              isSwitchingMode.current ||
+              hasHandledEnd.current ||
+              hasUserEnded.current ||
+              hasCompleted.current;
+            if (isClosedStateError && isExpectedTeardown) return;
             console.error("ElevenLabs error:", normalizedMessage);
             if (hasTerminalError.current) return;
             clearConnectFailSafe();
-            if (/CLOSING or CLOSED state/i.test(normalizedMessage)) {
+            if (isClosedStateError) {
               hasTerminalError.current = true;
               setErrorMessage(
                 "Voice websocket closed unexpectedly. Please retry voice or switch to text."
@@ -458,7 +655,6 @@ export default function VoiceChat({
               if (!isUnmounting.current) {
                 setStatus("error");
               }
-              void stopConversation();
               return;
             }
             setErrorMessage(normalizedMessage);
@@ -472,15 +668,37 @@ export default function VoiceChat({
         // Use websocket only. The WebRTC transport has shown repeated
         // compatibility issues in this environment (rtc path / error_type).
         const connectionOrder: Array<"websocket"> = ["websocket"];
+        const authOrder: Array<"signed_url" | "agent_id"> = signedUrl
+          ? ["signed_url", "agent_id"]
+          : ["agent_id"];
         let lastError: unknown = null;
         const connectTimeoutMs = 4000;
 
-        const startSessionWithTimeout = async (connectionType: "websocket") => {
+        const startSessionWithTimeout = async (
+          connectionType: "websocket",
+          authMode: "signed_url" | "agent_id"
+        ) => {
           let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
           try {
-            const sessionConfig = signedUrl
-              ? { ...baseConfig, signedUrl, connectionType }
-              : { ...baseConfig, agentId: AGENT_ID, connectionType };
+            const contactSnapshot = contactRef.current;
+            const dynamicVariables: Record<string, string> = {
+              contact_name: contactSnapshot?.name?.trim() || "there",
+              contact_context: contactSnapshot?.context?.trim() || "",
+            };
+            const sessionConfig =
+              authMode === "signed_url" && signedUrl
+                ? {
+                    ...baseConfig,
+                    dynamicVariables,
+                    signedUrl,
+                    connectionType,
+                  }
+                : {
+                    ...baseConfig,
+                    dynamicVariables,
+                    agentId: AGENT_ID,
+                    connectionType,
+                  };
             const sessionPromise = Conversation.startSession(sessionConfig);
             const timeoutPromise = new Promise<never>((_, reject) => {
               timeoutHandle = setTimeout(() => {
@@ -500,26 +718,70 @@ export default function VoiceChat({
           }
         };
 
-        for (const connectionType of connectionOrder) {
-          if (cancelled) return;
-          try {
-            lastTransportAttempt.current = connectionType;
-            const session = await startSessionWithTimeout(connectionType);
-            if (cancelled) {
-              // Cleanup: effect was torn down while we were connecting
-              try { await session.endSession(); } catch { /* ignore */ }
-              return;
+        auth_loop: for (const authMode of authOrder) {
+          for (const connectionType of connectionOrder) {
+            if (cancelled) return;
+            try {
+              lastAuthMode.current = authMode;
+              lastTransportAttempt.current = connectionType;
+              const session = await startSessionWithTimeout(connectionType, authMode);
+              if (cancelled) {
+                // Cleanup: effect was torn down while we were connecting
+                try {
+                  if (session.isOpen()) await session.endSession();
+                } catch {
+                  /* ignore */
+                }
+                return;
+              }
+              conversationRef.current = session;
+              if (shouldResumeFromTranscript) {
+                isResumeAudioGuardActive.current = true;
+                resumeStartedAtRef.current = Date.now();
+                try {
+                  session.setVolume({ volume: 0 });
+                } catch {
+                  // ignore volume race
+                }
+                const resumeContext = buildResumeContext(messagesRef.current);
+                if (resumeContext) {
+                  try {
+                    session.sendContextualUpdate(resumeContext);
+                  } catch {
+                    // ignore contextual update failure
+                  }
+                }
+                const replayExcerpt = getReplayAssistantExcerpt(messagesRef.current);
+                if (replayExcerpt) {
+                  expectedReplayAssistantMessageRef.current = replayExcerpt;
+                  try {
+                    session.sendUserMessage(buildResumeVerbalizePrompt(replayExcerpt));
+                  } catch {
+                    expectedReplayAssistantMessageRef.current = null;
+                    // ignore resume verbalization failure
+                  }
+                }
+                clearResumeAudioUnmuteTimer();
+                resumeAudioUnmuteTimer.current = setTimeout(() => {
+                  if (cancelled || isUnmounting.current) return;
+                  isResumeAudioGuardActive.current = false;
+                  resumeStartedAtRef.current = null;
+                  const convo = conversationRef.current;
+                  if (!isSpeakerMutedRef.current && convo?.isOpen()) {
+                    convo.setVolume({ volume: 1 });
+                  }
+                }, 2000);
+              }
+              setErrorMessage("");
+              hasConnectTimedOut.current = false;
+              break auth_loop;
+            } catch (err) {
+              lastError = err;
+              console.warn(
+                `${connectionType} init failed with ${authMode}, trying next option:`,
+                err
+              );
             }
-            conversationRef.current = session;
-            setErrorMessage("");
-            hasConnectTimedOut.current = false;
-            break;
-          } catch (err) {
-            lastError = err;
-            console.warn(
-              `${connectionType} init failed, trying next transport:`,
-              err
-            );
           }
         }
 
@@ -545,17 +807,20 @@ export default function VoiceChat({
       cancelled = true;
       isUnmounting.current = true;
       clearConnectFailSafe();
+      clearResumeAudioUnmuteTimer();
+      isResumeAudioGuardActive.current = false;
+      resumeStartedAtRef.current = null;
+      expectedReplayAssistantMessageRef.current = null;
       const activeConversation = conversationRef.current;
       conversationRef.current = null;
       if (activeConversation) {
-        try { activeConversation.endSession().catch(() => {}); } catch { /* ignore */ }
+        void requestSessionClose(activeConversation);
       }
     };
   }, [
-    contact?.name,
-    contact?.context,
     handleEnd,
     interviewConfig.slug,
+    requestSessionClose,
     sessionAttempt,
     sessionId,
     shareCode,
@@ -588,13 +853,7 @@ export default function VoiceChat({
     const activeConversation = conversationRef.current;
     conversationRef.current = null;
 
-    try {
-      if (activeConversation?.isOpen()) {
-        await activeConversation.endSession();
-      }
-    } catch (error) {
-      console.warn("Manual endSession failed:", error);
-    }
+    await requestSessionClose(activeConversation);
 
     await completeInterview(finalTranscript);
   };
@@ -605,7 +864,12 @@ export default function VoiceChat({
     hasConnectTimedOut.current = false;
     hasTerminalError.current = false;
     hasTriggeredAutoEnd.current = false;
-    hasSuppressedInitialReplayMessage.current = false;
+    isSwitchingMode.current = false;
+    hasRequestedSessionClose.current = false;
+    isResumeAudioGuardActive.current = false;
+    resumeStartedAtRef.current = null;
+    expectedReplayAssistantMessageRef.current = null;
+    clearResumeAudioUnmuteTimer();
     connectingSince.current = Date.now();
     setErrorMessage("");
     setStatus("connecting");
@@ -646,6 +910,27 @@ export default function VoiceChat({
     speaking: "Speaking...",
     listening: "Listening...",
     error: "Connection error",
+  };
+
+  const switchToTextMode = async () => {
+    isSwitchingMode.current = true;
+    hasHandledEnd.current = true;
+    hasUserEnded.current = true;
+    const activeConversation = conversationRef.current;
+    if (activeConversation?.isOpen()) {
+      try {
+        activeConversation.setVolume({ volume: 0 });
+      } catch {
+        // ignore
+      }
+      try {
+        activeConversation.setMicMuted(true);
+      } catch {
+        // ignore
+      }
+    }
+    await stopConversation();
+    onSwitchMode();
   };
 
   const forcedConnectTimeout =
@@ -698,7 +983,9 @@ export default function VoiceChat({
           </div>
         </div>
         <button
-          onClick={onSwitchMode}
+            onClick={() => {
+              void switchToTextMode();
+            }}
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground bg-secondary hover:bg-accent px-3 py-1.5 rounded-full transition-colors"
         >
           <MessageSquare className="w-3.5 h-3.5" />
@@ -841,12 +1128,9 @@ export default function VoiceChat({
       </div>
 
       {messages.length > 0 && (
-        <div className="bg-card border-t border-border max-h-48 overflow-y-auto px-4 py-3">
-          <p className="text-xs text-muted-foreground mb-2 font-medium uppercase tracking-wide">
-            Transcript
-          </p>
+        <div className="bg-card border-t border-border max-h-72 overflow-y-auto px-4 py-3">
           <div className="space-y-2">
-            {messages.slice(-4).map((msg, i) => (
+            {messages.slice(-8).map((msg, i) => (
               <p
                 key={i}
                 className={`text-xs ${

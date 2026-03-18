@@ -7,6 +7,7 @@ import {
   useParams,
   useNavigate,
   useLocation,
+  useNavigationType,
 } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 
@@ -37,14 +38,17 @@ function Interview({
   interviewConfig,
   pathContactCode,
   pathMode,
+  pathThanks,
 }: {
   interviewConfig: InterviewConfig;
   pathContactCode?: string | null;
   pathMode?: InterviewMode | null;
+  pathThanks?: boolean;
 }) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const contactCode =
     pathContactCode?.trim() || searchParams.get("c")?.trim() || null;
   const [contact, setContact] = useState<Contact | null>(null);
@@ -78,6 +82,8 @@ function Interview({
   const [transcript, setTranscript] = useState<
     { role: "user" | "assistant"; content: string }[]
   >([]);
+  const [resumeVoiceFromTranscript, setResumeVoiceFromTranscript] =
+    useState(false);
   const hasTrackedOpen = useRef(false);
 
   useEffect(() => {
@@ -94,38 +100,14 @@ function Interview({
   }, [contactCode, interviewConfig.slug, pathContactCode]);
 
   useEffect(() => {
+    if (pathThanks) return;
     if (!pathMode) return;
+    setResumeVoiceFromTranscript(false);
     setMode(pathMode);
     setPhase((currentPhase) =>
       currentPhase === "welcome" ? "interview" : currentPhase
     );
-  }, [pathMode]);
-
-  useEffect(() => {
-    const sessionKey = COMPLETED_SESSION_KEY(interviewConfig.slug);
-    const localKey = COMPLETED_LOCAL_KEY(interviewConfig.slug);
-    try {
-      const raw =
-        typeof window !== "undefined"
-          ? window.sessionStorage.getItem(sessionKey) ??
-            window.localStorage.getItem(localKey)
-          : null;
-      if (!raw) return;
-      const stored = JSON.parse(raw) as {
-        assessment: Assessment;
-        transcript: { role: "user" | "assistant"; content: string }[];
-        mode?: InterviewMode;
-      };
-      if (stored?.assessment?.sessionId && Array.isArray(stored.transcript)) {
-        setAssessment(stored.assessment);
-        setTranscript(stored.transcript);
-        if (stored.mode) setMode(stored.mode);
-        setPhase("results");
-      }
-    } catch {
-      // ignore invalid or missing session
-    }
-  }, [interviewConfig.slug]);
+  }, [pathMode, pathThanks]);
 
   const buildInterviewPath = (nextMode?: InterviewMode) => {
     const basePath = pathContactCode
@@ -135,15 +117,98 @@ function Interview({
     return `${basePath}/${nextMode}${location.search}`;
   };
 
+  const buildThanksPath = () => {
+    const q = location.search;
+    if (pathContactCode) {
+      return `/${interviewConfig.slug}/${encodeURIComponent(pathContactCode)}/thanks${q}`;
+    }
+    return `/${interviewConfig.slug}/thanks${q}`;
+  };
+
+  const buildWelcomePath = () => {
+    const basePath = pathContactCode
+      ? `/${interviewConfig.slug}/${encodeURIComponent(pathContactCode)}`
+      : `/${interviewConfig.slug}`;
+    return `${basePath}${location.search}`;
+  };
+
   useEffect(() => {
     // Keep interview mode explicit in the URL so browser back/forward
     // can reliably move between text and voice states.
+    if (pathThanks) return;
     if (phase !== "interview") return;
     if (pathMode) return;
+    if (navigationType === "POP") {
+      // User navigated back/forward to the base interview route.
+      // Treat this as returning to the intro screen.
+      setPhase("welcome");
+      return;
+    }
     navigate(buildInterviewPath(mode), { replace: true });
-  }, [mode, navigate, pathMode, phase]);
+  }, [mode, navigate, navigationType, pathMode, pathThanks, phase]);
+
+  useEffect(() => {
+    // If the URL explicitly targets an interview mode, prioritize that intent
+    // over restoring a previously completed session to /thanks.
+    if (pathMode && !pathThanks) return;
+
+    const sessionKey = COMPLETED_SESSION_KEY(interviewConfig.slug);
+    const localKey = COMPLETED_LOCAL_KEY(interviewConfig.slug);
+    let raw: string | null = null;
+    try {
+      raw =
+        typeof window !== "undefined"
+          ? window.sessionStorage.getItem(sessionKey) ??
+            window.localStorage.getItem(localKey)
+          : null;
+    } catch {
+      return;
+    }
+    type StoredCompletion = {
+      assessment: Assessment;
+      transcript: { role: "user" | "assistant"; content: string }[];
+      mode?: InterviewMode;
+    };
+    let stored: StoredCompletion | null = null;
+    try {
+      stored = raw ? (JSON.parse(raw) as StoredCompletion) : null;
+    } catch {
+      return;
+    }
+    const valid = Boolean(
+      stored?.assessment?.sessionId && Array.isArray(stored?.transcript)
+    );
+
+    if (pathThanks) {
+      if (valid && stored !== null) {
+        setAssessment(stored.assessment);
+        setTranscript(stored.transcript);
+        if (stored.mode) setMode(stored.mode);
+        setPhase("results");
+      } else {
+        navigate(buildWelcomePath(), { replace: true });
+      }
+      return;
+    }
+
+    if (valid && stored !== null) {
+      setAssessment(stored.assessment);
+      setTranscript(stored.transcript);
+      if (stored.mode) setMode(stored.mode);
+      setPhase("results");
+      navigate(buildThanksPath(), { replace: true });
+    }
+  }, [
+    interviewConfig.slug,
+    pathMode,
+    pathThanks,
+    pathContactCode,
+    location.search,
+    navigate,
+  ]);
 
   const handleStart = (selectedMode: InterviewMode) => {
+    setResumeVoiceFromTranscript(false);
     setMode(selectedMode);
     setPhase("interview");
     navigate(buildInterviewPath(selectedMode), { replace: false });
@@ -169,6 +234,7 @@ function Interview({
     } catch {
       // ignore quota or serialization errors
     }
+    navigate(buildThanksPath(), { replace: true });
   };
 
   const handleStartNewInterview = () => {
@@ -183,14 +249,26 @@ function Interview({
     // Reset in-memory state immediately so restart works even on same-route URLs.
     setAssessment(null);
     setTranscript([]);
+    setResumeVoiceFromTranscript(false);
     setMode("text");
     setPhase("welcome");
-    navigate(buildInterviewPath(), { replace: false });
+    navigate(buildWelcomePath(), { replace: true });
   };
 
   const handleSwitchMode = (newMode: InterviewMode) => {
+    const hasPriorUserTurns = transcript.some(
+      (item) => item.role === "user" && Boolean(item.content?.trim())
+    );
+    const shouldResume =
+      mode === "text" && newMode === "voice" && hasPriorUserTurns;
+    setResumeVoiceFromTranscript(shouldResume);
     setMode(newMode);
     navigate(buildInterviewPath(newMode), { replace: false });
+  };
+
+  const handleReturnToStart = () => {
+    setPhase("welcome");
+    navigate(buildWelcomePath(), { replace: false });
   };
 
   const handleTranscriptChange = (
@@ -228,6 +306,7 @@ function Interview({
         contact={contact}
         shareCode={contactCode}
         transcript={transcript}
+        resumeFromTranscript={resumeVoiceFromTranscript}
         onTranscriptChange={handleTranscriptChange}
         onComplete={handleInterviewComplete}
         onSwitchMode={() => handleSwitchMode("text")}
@@ -244,6 +323,7 @@ function Interview({
       onTranscriptChange={handleTranscriptChange}
       onComplete={handleInterviewComplete}
       onSwitchMode={() => handleSwitchMode("voice")}
+      onReturnToStart={handleReturnToStart}
       interviewConfig={interviewConfig}
     />
   );
@@ -291,8 +371,29 @@ function InterviewRoute() {
   const segments = (restPath || "").split("/").filter(Boolean);
   let pathContactCode: string | null = null;
   let pathMode: InterviewMode | null = null;
+  let pathThanks = false;
 
-  if (segments.length === 1) {
+  if (segments.length > 0 && segments[segments.length - 1] === "thanks") {
+    pathThanks = true;
+    const before = segments.slice(0, -1);
+    if (before.length === 0) {
+      /* /:slug/thanks */
+    } else if (before.length === 1) {
+      if (before[0] === "text" || before[0] === "voice") {
+        pathMode = before[0];
+      } else {
+        pathContactCode = decodeURIComponent(before[0]);
+      }
+    } else if (before.length === 2) {
+      if (before[1] !== "text" && before[1] !== "voice") {
+        return <Navigate to={`/${interviewConfig.slug}`} replace />;
+      }
+      pathContactCode = decodeURIComponent(before[0]);
+      pathMode = before[1];
+    } else {
+      return <Navigate to={`/${interviewConfig.slug}`} replace />;
+    }
+  } else if (segments.length === 1) {
     if (segments[0] === "text" || segments[0] === "voice") {
       pathMode = segments[0];
     } else {
@@ -313,6 +414,7 @@ function InterviewRoute() {
       interviewConfig={interviewConfig}
       pathContactCode={pathContactCode}
       pathMode={pathMode}
+      pathThanks={pathThanks}
     />
   );
 }
@@ -332,12 +434,18 @@ function InterviewAdminRoute() {
 }
 
 function InterviewAdminCodesRoute() {
-  const { interviewSlug } = useParams();
+  const { interviewSlug, contactId } = useParams();
   const interviewConfig = getInterviewConfigBySlug(interviewSlug);
   if (!interviewConfig) {
     return <Navigate to="/" replace />;
   }
-  return <AdminResults interviewConfig={interviewConfig} adminView="codes" />;
+  return (
+    <AdminResults
+      interviewConfig={interviewConfig}
+      adminView="codes"
+      selectedContactId={contactId ?? null}
+    />
+  );
 }
 
 export default function App() {
@@ -347,6 +455,10 @@ export default function App() {
       <Route
         path="/admin"
         element={<Navigate to={`/${getDefaultInterviewConfig().slug}/admin`} replace />}
+      />
+      <Route
+        path="/:interviewSlug/admin/codes/:contactId"
+        element={<InterviewAdminCodesRoute />}
       />
       <Route path="/:interviewSlug/admin/codes" element={<InterviewAdminCodesRoute />} />
       <Route path="/:interviewSlug/admin/:sessionId" element={<InterviewAdminRoute />} />

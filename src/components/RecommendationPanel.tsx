@@ -20,6 +20,8 @@ import {
   resolveRecommendationToolUrl,
 } from "../../shared/recommendation_tool_urls";
 import { getRecommendationBrandingFromUrl } from "../../shared/recommendation_branding.ts";
+import { sanitizeContactIdentityName } from "../../shared/contact_identity";
+import { personSummaryWorthShowing } from "../../shared/person_summary_display";
 
 interface RecommendationPanelProps {
   assessment: Assessment;
@@ -154,8 +156,9 @@ export default function RecommendationPanel({
     assessment.referralPotential === "low"
       ? assessment.referralPotential
       : "low";
-  const displayNameRaw = (contact?.name || assessment.contactName || "").trim();
-  const displayName = formatDisplayName(displayNameRaw);
+  const displayNameRaw =
+    sanitizeContactIdentityName(contact?.name || assessment.contactName) || "";
+  const displayName = displayNameRaw ? formatDisplayName(displayNameRaw) : "";
   const isNeotomaRecommendation = (rec: Recommendation) =>
     Boolean(rec.isNeotoma || /neotoma/i.test(rec.tool || ""));
   const initialEmail = (assessment.contactEmail || "").trim();
@@ -211,6 +214,7 @@ export default function RecommendationPanel({
     .map((m) => m.content)
     .join(" ")
     .toLowerCase();
+  const transcriptForDisplay = transcript.filter((m) => m.content?.trim());
   const referralHints = `${safeReferralNotes} ${transcriptText}`.toLowerCase();
   const shouldShowReferralForm =
     safeReferralPotential !== "low" ||
@@ -237,15 +241,10 @@ export default function RecommendationPanel({
     .replace(/\b[Yy]ou has\b/g, "You have")
     .replace(/\b[Yy]ou is\b/g, "You are")
     .replace(/\b[Yy]ou was\b/g, "You were");
-  const summaryIndicatesNoEngagement =
-    /minimal engagement|did not share|no substantive|no engagement|provided minimal|despite multiple prompts|ended conversation immediately|without sharing/i.test(
-      safePersonSummary
-    );
   const personSummaryTrimmed = personSummaryForDisplay.trim();
   const showPersonSummary =
     personSummaryTrimmed.length > 0 &&
-    personSummaryTrimmed.toLowerCase() !== "null" &&
-    !summaryIndicatesNoEngagement;
+    personSummaryWorthShowing(safePersonSummary);
   const hasContactEmail =
     typeof contact?.email === "string" && contact.email.trim().length > 0;
   const handleEmailSubmit = async (e: React.FormEvent) => {
@@ -318,8 +317,8 @@ export default function RecommendationPanel({
               : "Thanks for the conversation"}
           </h1>
           <p className="text-muted-foreground">
-            {contact?.name
-              ? `Here's your summary and next steps, ${contact.name}`
+            {displayName
+              ? `Here's your summary and next steps, ${displayName}`
               : "Here's your summary and next steps"}
           </p>
         </div>
@@ -585,6 +584,25 @@ export default function RecommendationPanel({
             <p className="text-xs text-muted-foreground mt-2">
               Choose voice, text, or live with Mark again.
             </p>
+          </div>
+        )}
+
+        {transcriptForDisplay.length > 0 && (
+          <div className="bg-card border border-border rounded-xl p-5 mt-6">
+            <h3 className="text-sm font-semibold text-foreground mb-2">Transcript</h3>
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {transcriptForDisplay.map((msg, i) => (
+                <p
+                  key={`${msg.role}-${i}`}
+                  className="text-xs text-muted-foreground leading-relaxed"
+                >
+                  <span className="font-medium text-foreground">
+                    {msg.role === "user" ? "You" : interviewConfig.assistantDisplayName}:
+                  </span>{" "}
+                  {msg.content}
+                </p>
+              ))}
+            </div>
           </div>
         )}
 

@@ -4,6 +4,7 @@ import {
   NEOTOMA_DEEP_URL,
   resolveRecommendationToolUrl,
 } from "../shared/recommendation_tool_urls";
+import { sanitizeContactIdentityName } from "../shared/contact_identity";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -103,7 +104,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     assessment.sessionId = sessionId;
     assessment.timestamp = new Date().toISOString();
     assessment.durationSeconds = durationSeconds || 0;
-    if (contactName) assessment.contactName = contactName;
+    assessment.contactName = sanitizeContactIdentityName(assessment.contactName);
+    const bodyName = sanitizeContactIdentityName(contactName);
+    if (bodyName) assessment.contactName = bodyName;
 
     return res.status(200).json(assessment);
   } catch (error) {
