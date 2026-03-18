@@ -66,6 +66,11 @@ Required Vercel environment variables:
 - `KV_REST_API_URL` — must be the **REST** endpoint (`https://...`). Do not use the `redis://` URL; the Upstash client requires HTTPS. In Vercel, connect the Redis integration to the project and use the injected `KV_REST_API_URL`. For local dev, copy the REST URL from the integration or Upstash dashboard.
 - `KV_REST_API_TOKEN`
 - `KV_KEY_PREFIX` (recommended when sharing one Redis DB between envs)
+- `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL` (optional) — if set, `Sync now` pulls contacts from this HTTP endpoint instead of running local `neotoma` CLI. Useful for tunneling to a trusted local API while the app is deployed in prod.
+- `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TOKEN` (optional) — bearer token (or raw token for custom header) sent to sync API.
+- `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_HEADER` (optional) — auth header name for sync API, defaults to `Authorization`.
+- `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TIMEOUT_MS` (optional) — HTTP timeout for sync calls, default `15000`.
+- `INTERVIEWS_ADMIN_NEOTOMA_ENV` (optional) — used only by CLI sync path when `INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL` is not set.
 - `SENDGRID_API_KEY` (for invite email delivery)
 - `SENDGRID_FROM_EMAIL` (sender email for invites)
 - `SENDGRID_FROM_NAME` (sender display name for invites)

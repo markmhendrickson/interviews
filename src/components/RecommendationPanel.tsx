@@ -15,6 +15,11 @@ import type { Contact } from "../lib/contacts";
 import NeotomaInstallCard from "./NeotomaInstallCard";
 import type { InterviewConfig } from "../interviews/registry";
 import { LIVE_SCHEDULING_30_MIN_URL } from "../lib/scheduling";
+import {
+  NEOTOMA_DEEP_URL,
+  resolveRecommendationToolUrl,
+} from "../../shared/recommendation_tool_urls";
+import { getRecommendationBrandingFromUrl } from "../../shared/recommendation_branding.ts";
 
 interface RecommendationPanelProps {
   assessment: Assessment;
@@ -23,14 +28,6 @@ interface RecommendationPanelProps {
   interviewConfig: InterviewConfig;
   onStartNewInterview?: () => void;
 }
-
-const TOOL_URL_HINTS: Record<string, string> = {
-  "chatgpt custom gpts": "https://chat.openai.com/gpts",
-  "chatgpt gpts": "https://chat.openai.com/gpts",
-  "claude with projects": "https://claude.ai",
-  "claude projects": "https://claude.ai",
-  perplexity: "https://perplexity.ai",
-};
 
 function getRecommendationUrl(
   rec: Recommendation,
@@ -47,12 +44,48 @@ function getRecommendationUrl(
   const explicit = rec.url?.trim();
   if (explicit) return explicit;
 
-  if (normalizedTool && TOOL_URL_HINTS[normalizedTool]) {
-    return TOOL_URL_HINTS[normalizedTool];
-  }
+  const resolved = resolveRecommendationToolUrl(rec.tool || "");
+  if (resolved) return resolved;
 
-  // Ensure every concrete recommendation has a useful destination.
-  return `https://www.google.com/search?q=${encodeURIComponent(`${rec.tool} official site`)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(`${rec.tool} official documentation OR getting started`)}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatDisplayName(value: string): string {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function RecommendationIcon({ tool, href }: { tool: string; href: string }) {
+  const { iconUrls, monogram } = getRecommendationBrandingFromUrl(tool, href);
+  const [iconIndex, setIconIndex] = useState(0);
+  const activeIconUrl = iconUrls[iconIndex];
+
+  return (
+    <div className="w-8 h-8 rounded-lg bg-secondary border border-border flex items-center justify-center overflow-hidden flex-shrink-0">
+      {activeIconUrl ? (
+        <img
+          src={activeIconUrl}
+          alt=""
+          aria-hidden="true"
+          className="w-4 h-4 object-contain"
+          loading="lazy"
+          onError={() => setIconIndex((prev) => prev + 1)}
+        />
+      ) : (
+        <span className="text-xs font-semibold text-muted-foreground">
+          {monogram}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function ToolCard({
@@ -72,7 +105,12 @@ function ToolCard({
       className="block bg-card border border-border rounded-xl p-5 hover:border-primary/40 transition-colors shadow-[0px_15px_30px_0px_rgba(0,0,0,0.05)]"
     >
       <div className="flex items-start justify-between mb-2">
-        <h3 className="font-semibold text-foreground">{rec.tool}</h3>
+        <div className="flex items-start gap-2.5 min-w-0">
+          <RecommendationIcon tool={rec.tool || ""} href={href} />
+          <h3 className="font-semibold text-foreground leading-8 truncate">
+            {rec.tool}
+          </h3>
+        </div>
         <ExternalLink className="w-4 h-4 text-muted-foreground flex-shrink-0" />
       </div>
       <p className="text-sm text-muted-foreground mb-3 leading-relaxed">
@@ -116,14 +154,32 @@ export default function RecommendationPanel({
     assessment.referralPotential === "low"
       ? assessment.referralPotential
       : "low";
+  const displayNameRaw = (contact?.name || assessment.contactName || "").trim();
+  const displayName = formatDisplayName(displayNameRaw);
   const isNeotomaRecommendation = (rec: Recommendation) =>
     Boolean(rec.isNeotoma || /neotoma/i.test(rec.tool || ""));
-  const [email, setEmail] = useState("");
-  const [emailSubmitted, setEmailSubmitted] = useState(false);
-  const [referrals, setReferrals] = useState<ReferralContact[]>([
-    { name: "", contactInfo: "", notes: "" },
-  ]);
-  const [referralsSubmitted, setReferralsSubmitted] = useState(false);
+  const initialEmail = (assessment.contactEmail || "").trim();
+  const initialReferralContacts = Array.isArray(assessment.referralContacts)
+    ? assessment.referralContacts
+        .map((entry) => ({
+          name: (entry?.name || "").trim(),
+          contactInfo: ((entry?.contactInfo || entry?.email || "") as string).trim(),
+          notes: (entry?.notes || "").trim(),
+        }))
+        .filter((entry) => entry.name || entry.contactInfo || entry.notes)
+    : [];
+  const [email, setEmail] = useState(initialEmail);
+  const [emailSubmitted, setEmailSubmitted] = useState(Boolean(initialEmail));
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [referrals, setReferrals] = useState<ReferralContact[]>(
+    initialReferralContacts.length > 0
+      ? initialReferralContacts
+      : [{ name: "", contactInfo: "", notes: "" }]
+  );
+  const [referralsSubmitted, setReferralsSubmitted] = useState(
+    initialReferralContacts.length > 0
+  );
+  const [isEditingReferrals, setIsEditingReferrals] = useState(false);
 
   const populatedRecommendations = safeRecommendations.filter(
     (r) => r.tool?.trim() || r.relevance?.trim() || r.nextStep?.trim()
@@ -141,8 +197,9 @@ export default function RecommendationPanel({
           tool: "Neotoma",
           relevance:
             "You appear to match Neotoma's target profile for deterministic agent memory workflows.",
-          nextStep: "Visit neotoma.io to review fit and implementation options.",
+          nextStep: "Follow the install guide, then run neotoma init and connect your editor via MCP.",
           isNeotoma: true,
+          url: NEOTOMA_DEEP_URL,
         }
       : undefined);
   const otherRecs = populatedRecommendations.filter(
@@ -160,17 +217,37 @@ export default function RecommendationPanel({
     /\b(referral|intro|introduce|colleague|friend|know someone|pass along)\b/.test(
       referralHints
     );
-  const personSummaryForDisplay = safePersonSummary
+  const personSummaryWithNameNormalized = displayNameRaw
+    ? safePersonSummary
+        .replace(new RegExp(`^${escapeRegExp(displayNameRaw)}\\b\\s*`, "i"), "You ")
+        .replace(
+          new RegExp(`\\b${escapeRegExp(displayNameRaw)}'s\\b`, "gi"),
+          "your"
+        )
+        .replace(new RegExp(`\\b${escapeRegExp(displayNameRaw)}\\b`, "gi"), "you")
+    : safePersonSummary;
+  const personSummaryForDisplay = personSummaryWithNameNormalized
     .replace(/\b[Tt]he contact\b/g, "You")
     .replace(/\b[Cc]ontact\b/g, "You")
     .replace(/\btheir\b/g, "your")
     .replace(/\b[Tt]hey\b/g, "you")
+    .replace(/\b[Yy]ou builds\b/g, "You build")
+    .replace(/\b[Yy]ou works\b/g, "You work")
+    .replace(/\b[Yy]ou deals\b/g, "You deal")
+    .replace(/\b[Yy]ou has\b/g, "You have")
+    .replace(/\b[Yy]ou is\b/g, "You are")
     .replace(/\b[Yy]ou was\b/g, "You were");
   const summaryIndicatesNoEngagement =
     /minimal engagement|did not share|no substantive|no engagement|provided minimal|despite multiple prompts|ended conversation immediately|without sharing/i.test(
       safePersonSummary
     );
-
+  const personSummaryTrimmed = personSummaryForDisplay.trim();
+  const showPersonSummary =
+    personSummaryTrimmed.length > 0 &&
+    personSummaryTrimmed.toLowerCase() !== "null" &&
+    !summaryIndicatesNoEngagement;
+  const hasContactEmail =
+    typeof contact?.email === "string" && contact.email.trim().length > 0;
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return;
@@ -184,6 +261,7 @@ export default function RecommendationPanel({
     }).catch(() => {});
 
     setEmailSubmitted(true);
+    setIsEditingEmail(false);
   };
 
   const handleReferralChange = (
@@ -224,6 +302,7 @@ export default function RecommendationPanel({
     }).catch(() => {});
 
     setReferralsSubmitted(true);
+    setIsEditingReferrals(false);
   };
 
   return (
@@ -234,7 +313,9 @@ export default function RecommendationPanel({
             <CheckCircle2 className="w-6 h-6" />
           </div>
           <h1 className="text-2xl font-semibold text-foreground mb-2">
-            Thanks for the conversation
+            {displayName
+              ? `Thanks for the conversation, ${displayName}`
+              : "Thanks for the conversation"}
           </h1>
           <p className="text-muted-foreground">
             {contact?.name
@@ -243,7 +324,7 @@ export default function RecommendationPanel({
           </p>
         </div>
 
-        {!summaryIndicatesNoEngagement && (
+        {showPersonSummary && (
           <div className="bg-card border border-border rounded-xl p-5 mb-8">
             <div className="flex items-start gap-3">
               <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
@@ -254,7 +335,7 @@ export default function RecommendationPanel({
                   What you told me
                 </p>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  {personSummaryForDisplay}
+                  {personSummaryTrimmed}
                 </p>
               </div>
             </div>
@@ -283,10 +364,53 @@ export default function RecommendationPanel({
             <p className="text-xs text-muted-foreground mb-4">
               Optional — share referral contacts and context.
             </p>
-            {referralsSubmitted ? (
-              <div className="flex items-center gap-2 text-sm text-primary">
-                <CheckCircle2 className="w-4 h-4" />
-                Thanks! Referral details saved.
+            {referralsSubmitted && !isEditingReferrals ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-primary">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Thanks! Referral details saved.
+                </div>
+                <div className="space-y-2 rounded-lg border border-border px-3 py-3">
+                  <p className="text-xs font-medium text-foreground">
+                    Submitted referrals
+                  </p>
+                  {referrals
+                    .map((entry) => ({
+                      name: (entry.name || "").trim(),
+                      contactInfo: (entry.contactInfo || entry.email || "").trim(),
+                      notes: (entry.notes || "").trim(),
+                    }))
+                    .filter((entry) => entry.name || entry.contactInfo || entry.notes)
+                    .map((entry, index) => (
+                      <div
+                        key={`${entry.name}-${index}`}
+                        className="rounded-md border border-border px-3 py-2"
+                      >
+                        {entry.name && (
+                          <p className="text-sm font-medium text-foreground">
+                            {entry.name}
+                          </p>
+                        )}
+                        {entry.contactInfo && (
+                          <p className="text-xs text-muted-foreground">
+                            {entry.contactInfo}
+                          </p>
+                        )}
+                        {entry.notes && (
+                          <p className="text-xs text-foreground/85 mt-1 leading-relaxed">
+                            {entry.notes}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingReferrals(true)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                >
+                  Edit referrals
+                </button>
               </div>
             ) : (
               <form onSubmit={handleReferralSubmit} className="space-y-3">
@@ -305,26 +429,36 @@ export default function RecommendationPanel({
                       onChange={(e) =>
                         handleReferralChange(index, "contactInfo", e.target.value)
                       }
-                      placeholder="Email, phone, or handle (optional)"
-                      className="md:col-span-3 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+                      placeholder="Email, phone, or @handle"
+                      title="Email, phone, or @handle"
+                      className="md:col-span-4 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
                     />
                     <input
                       type="text"
                       value={referral.notes || ""}
                       onChange={(e) => handleReferralChange(index, "notes", e.target.value)}
-                      placeholder="Why relevant? (optional)"
-                      className="md:col-span-5 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+                      placeholder="Why relevant? (or platform for @handle)"
+                      className={
+                        referrals.length > 1
+                          ? "md:col-span-4 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+                          : "md:col-span-5 rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-ring"
+                      }
                     />
-                    <button
-                      type="button"
-                      onClick={() => removeReferralRow(index)}
-                      disabled={referrals.length === 1}
-                      className="md:col-span-1 inline-flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-40"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {referrals.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeReferralRow(index)}
+                        className="md:col-span-1 inline-flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 ))}
+                <p className="text-xs text-muted-foreground">
+                  If you share a handle, include platform in notes (for example:
+                  @name on X, LinkedIn, GitHub, or Discord).
+                </p>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -339,8 +473,17 @@ export default function RecommendationPanel({
                     disabled={!referrals.some((r) => r.name.trim())}
                     className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
                   >
-                    Save referrals
+                    {referralsSubmitted ? "Save referral updates" : "Save referrals"}
                   </button>
+                  {referralsSubmitted && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingReferrals(false)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </div>
               </form>
             )}
@@ -370,15 +513,28 @@ export default function RecommendationPanel({
           </div>
         </div>
 
-        {!contact && (
+        {!hasContactEmail && (
           <div className="bg-card border border-border rounded-xl p-5">
             <h3 className="text-sm font-semibold text-foreground mb-2">
               Want Mark to follow up?
             </h3>
-            {emailSubmitted ? (
-              <div className="flex items-center gap-2 text-sm text-primary">
-                <CheckCircle2 className="w-4 h-4" />
-                Thanks! Mark will be in touch.
+            {emailSubmitted && !isEditingEmail ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-primary">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Thanks! Mark will be in touch.
+                </div>
+                <div className="rounded-lg border border-border px-3 py-2">
+                  <p className="text-xs text-muted-foreground">Submitted email</p>
+                  <p className="text-sm text-foreground mt-0.5">{email}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingEmail(true)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                >
+                  Edit email
+                </button>
               </div>
             ) : (
               <form onSubmit={handleEmailSubmit} className="flex gap-2">
@@ -397,8 +553,17 @@ export default function RecommendationPanel({
                   disabled={!email.trim()}
                   className="bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  Send
+                  {emailSubmitted ? "Save update" : "Send"}
                 </button>
+                {emailSubmitted && (
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingEmail(false)}
+                    className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
               </form>
             )}
             <p className="text-xs text-muted-foreground mt-2">

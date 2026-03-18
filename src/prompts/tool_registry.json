@@ -4,26 +4,26 @@
       "name": "Neotoma",
       "category": "Deterministic state layer",
       "description": "Persistent, versioned, replayable state for AI agents. Schema-bound, append-only, no silent mutation.",
-      "url": "https://neotoma.io",
+      "url": "https://github.com/markmhendrickson/neotoma/blob/main/install.md",
       "forIcpOnly": true
     },
     {
       "name": "Mem0",
       "category": "Lightweight memory",
       "description": "Simple memory layer for LLM apps. Good for basic personalization without infrastructure concerns.",
-      "url": "https://mem0.ai"
+      "url": "https://docs.mem0.ai/quickstart"
     },
     {
       "name": "Zep",
       "category": "Conversation memory",
       "description": "Long-term memory for AI assistants. Focuses on chat history and user context.",
-      "url": "https://www.getzep.com"
+      "url": "https://help.getzep.com/"
     },
     {
       "name": "LangChain/LangGraph Memory",
       "category": "Framework memory",
       "description": "Built-in memory modules for LangChain and LangGraph agent frameworks.",
-      "url": "https://python.langchain.com"
+      "url": "https://python.langchain.com/docs/concepts/memory/"
     }
   ],
   "development": [
@@ -31,7 +31,7 @@
       "name": "Cursor",
       "category": "AI code editor",
       "description": "AI-first code editor built on VS Code. Deep codebase understanding and multi-file editing.",
-      "url": "https://cursor.sh"
+      "url": "https://cursor.com/docs"
     },
     {
       "name": "Claude Code",
@@ -43,25 +43,25 @@
       "name": "GitHub Copilot",
       "category": "Code completion",
       "description": "AI pair programmer integrated into VS Code, JetBrains, and more.",
-      "url": "https://github.com/features/copilot"
+      "url": "https://docs.github.com/en/copilot/get-started"
     },
     {
       "name": "Windsurf",
       "category": "AI code editor",
       "description": "AI-powered code editor with deep project context and agentic capabilities.",
-      "url": "https://codeium.com/windsurf"
+      "url": "https://docs.codeium.com/windsurf/getting-started"
     },
     {
       "name": "Replit Agent",
       "category": "Cloud development",
       "description": "AI agent that builds and deploys full apps from natural language in the browser.",
-      "url": "https://replit.com"
+      "url": "https://docs.replit.com/replitai/agent"
     },
     {
       "name": "v0",
       "category": "UI generation",
       "description": "Vercel's AI tool for generating React UI components from prompts.",
-      "url": "https://v0.dev"
+      "url": "https://v0.dev/docs"
     }
   ],
   "productivity": [
@@ -69,37 +69,37 @@
       "name": "Claude",
       "category": "AI assistant",
       "description": "Anthropic's AI assistant. Projects feature for persistent context. Strong reasoning.",
-      "url": "https://claude.ai"
+      "url": "https://support.claude.com/en/articles/9517075-what-are-projects"
     },
     {
       "name": "ChatGPT",
       "category": "AI assistant",
       "description": "OpenAI's AI assistant with custom GPTs and memory features.",
-      "url": "https://chat.openai.com"
+      "url": "https://help.openai.com/en/articles/8554397-creating-a-gpt"
     },
     {
       "name": "Perplexity",
       "category": "AI research",
       "description": "AI-powered research tool with real-time web search and citations.",
-      "url": "https://perplexity.ai"
+      "url": "https://www.perplexity.ai/help-center"
     },
     {
       "name": "Notion AI",
       "category": "Workspace AI",
       "description": "AI features built into Notion for writing, summarizing, and organizing.",
-      "url": "https://notion.so"
+      "url": "https://www.notion.so/help/notion-ai"
     },
     {
       "name": "Granola",
       "category": "Meeting notes",
       "description": "AI meeting notes that capture context and action items automatically.",
-      "url": "https://granola.ai"
+      "url": "https://help.granola.ai/"
     },
     {
       "name": "Otter.ai",
       "category": "Transcription",
       "description": "Real-time meeting transcription with speaker identification and summaries.",
-      "url": "https://otter.ai"
+      "url": "https://help.otter.ai/hc/en-us/articles/360045239473-Record-and-review-your-conversations"
     }
   ],
   "automation": [
@@ -107,19 +107,19 @@
       "name": "n8n",
       "category": "Workflow automation",
       "description": "Open-source workflow automation with AI integrations. Self-hostable.",
-      "url": "https://n8n.io"
+      "url": "https://docs.n8n.io/try-it-out/quickstart/"
     },
     {
       "name": "Make",
       "category": "Workflow automation",
       "description": "Visual automation platform connecting apps and services.",
-      "url": "https://make.com"
+      "url": "https://www.make.com/en/help"
     },
     {
       "name": "Zapier",
       "category": "Workflow automation",
       "description": "Connect apps and automate workflows with a low-code interface.",
-      "url": "https://zapier.com"
+      "url": "https://help.zapier.com/hc/en-us"
     }
   ],
   "agent_frameworks": [
@@ -127,31 +127,31 @@
       "name": "LangChain",
       "category": "Agent framework",
       "description": "Popular framework for building LLM-powered applications and agents.",
-      "url": "https://langchain.com"
+      "url": "https://python.langchain.com/docs/concepts/memory/"
     },
     {
       "name": "LangGraph",
       "category": "Agent orchestration",
       "description": "Graph-based agent orchestration built on LangChain. Stateful, multi-step workflows.",
-      "url": "https://langchain-ai.github.io/langgraph/"
+      "url": "https://langchain-ai.github.io/langgraph/tutorials/introduction/"
     },
     {
       "name": "CrewAI",
       "category": "Multi-agent",
       "description": "Framework for orchestrating role-playing autonomous AI agents.",
-      "url": "https://crewai.com"
+      "url": "https://docs.crewai.com/en/introduction"
     },
     {
       "name": "AutoGen",
       "category": "Multi-agent",
       "description": "Microsoft's framework for building multi-agent conversational systems.",
-      "url": "https://microsoft.github.io/autogen/"
+      "url": "https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/index.html"
     },
     {
       "name": "Google ADK",
       "category": "Agent development",
       "description": "Google's Agent Development Kit for building AI agents.",
-      "url": "https://developers.google.com/agents"
+      "url": "https://google.github.io/adk-docs/get-started/"
     }
   ]
 }

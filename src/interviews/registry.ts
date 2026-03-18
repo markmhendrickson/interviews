@@ -18,7 +18,7 @@ const interviewConfigs: InterviewConfig[] = [
     assistantDisplayName: "Mark's assistant",
     welcomeHeadline: "Hi there!",
     welcomeDescription:
-      "I'd love to learn what tools and workflows matter most to you — and share personalized recommendations based on what I've seen work for people in similar roles.",
+      "I'm building something in the AI tools space and want to understand how people actually work — what tools you rely on, where AI fits in, and what's still frustrating. In return, I'll share a few recommendations based on what I've seen work.",
     voiceLabel: "Voice conversation",
     textLabel: "Text conversation",
     adminTitle: "AI interview results",

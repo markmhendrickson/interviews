@@ -97,6 +97,7 @@ export default function VoiceChat({
   const hasTriggeredAutoEnd = useRef(false);
   const hasStarted = useRef(false);
   const hasSentAbandon = useRef(false);
+  const hasSuppressedInitialReplayMessage = useRef(false);
   const userProgressMilestone = useRef(0);
   const connectFailSafeTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -105,6 +106,7 @@ export default function VoiceChat({
   const lastTransportAttempt = useRef<"websocket" | "webrtc" | null>(null);
   const lastAuthMode = useRef<"signed_url" | "agent_id">("agent_id");
   const [clockTick, setClockTick] = useState(Date.now());
+  const shouldResumeFromTranscript = initialTranscript.length > 0;
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -275,6 +277,7 @@ export default function VoiceChat({
     hasConnectTimedOut.current = false;
     hasTerminalError.current = false;
     hasTriggeredAutoEnd.current = false;
+    hasSuppressedInitialReplayMessage.current = false;
     connectingSince.current = Date.now();
 
     async function startVoice() {
@@ -358,6 +361,16 @@ export default function VoiceChat({
           },
           onMessage: (msg: { source: "user" | "ai"; message: string }) => {
             if (cancelled) return;
+            if (
+              shouldResumeFromTranscript &&
+              msg.source === "ai" &&
+              !hasSuppressedInitialReplayMessage.current
+            ) {
+              // On text->voice resume, ignore the agent's default opener so the
+              // conversation continues from existing transcript context.
+              hasSuppressedInitialReplayMessage.current = true;
+              return;
+            }
             const rawMessage = String(msg.message || "");
             const hasHardEndToken =
               msg.source === "ai" && rawMessage.includes(HARD_END_SESSION_TOKEN);
@@ -546,6 +559,7 @@ export default function VoiceChat({
     sessionAttempt,
     sessionId,
     shareCode,
+    shouldResumeFromTranscript,
     stopConversation,
   ]);
 
@@ -591,6 +605,7 @@ export default function VoiceChat({
     hasConnectTimedOut.current = false;
     hasTerminalError.current = false;
     hasTriggeredAutoEnd.current = false;
+    hasSuppressedInitialReplayMessage.current = false;
     connectingSince.current = Date.now();
     setErrorMessage("");
     setStatus("connecting");

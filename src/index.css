@@ -64,6 +64,15 @@
   code, pre, .font-mono {
     font-family: "JetBrains Mono", "Fira Code", "Roboto Mono", "Courier New", monospace;
   }
+
+  /* Prevent iOS Safari from auto-zooming when focusing form controls. */
+  @media (hover: none) and (pointer: coarse) {
+    input,
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+  }
 }
 
 @layer utilities {

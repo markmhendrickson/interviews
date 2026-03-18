@@ -10,6 +10,7 @@ import {
   listResults,
   removeContact,
   removeResult,
+  syncContactsFromNeotoma,
   updateSyncStatus,
   upsertContact,
 } from "./_lib/store.js";
@@ -131,28 +132,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (resource === "sync") {
         const requestedAt = new Date().toISOString();
-        const requestedStatus =
+        const explicitStatus =
           req.body?.status === "success" ||
           req.body?.status === "error" ||
           req.body?.status === "requested"
             ? req.body.status
-            : "requested";
-        const sync = await updateSyncStatus(
-          {
-            status: requestedStatus,
-            lastRequestedAt: requestedAt,
-            lastSyncedAt:
-              requestedStatus === "success"
-                ? String(req.body?.lastSyncedAt || requestedAt)
-                : undefined,
-            lastError:
-              requestedStatus === "error"
-                ? String(req.body?.lastError || "Sync failed")
-                : undefined,
-          },
-          interviewSlug
-        );
-        return res.status(200).json({ ok: true, sync });
+            : null;
+
+        // Backward-compatible manual mode for callers that explicitly set status.
+        if (explicitStatus) {
+          const sync = await updateSyncStatus(
+            {
+              status: explicitStatus,
+              lastRequestedAt: requestedAt,
+              lastSyncedAt:
+                explicitStatus === "success"
+                  ? String(req.body?.lastSyncedAt || requestedAt)
+                  : undefined,
+              lastError:
+                explicitStatus === "error"
+                  ? String(req.body?.lastError || "Sync failed")
+                  : undefined,
+            },
+            interviewSlug
+          );
+          return res.status(200).json({ ok: true, sync });
+        }
+
+        try {
+          const syncResult = await syncContactsFromNeotoma(interviewSlug);
+          const sync = await updateSyncStatus(
+            {
+              status: "success",
+              lastRequestedAt: requestedAt,
+              lastSyncedAt: new Date().toISOString(),
+              lastError: undefined,
+            },
+            interviewSlug
+          );
+          return res.status(200).json({ ok: true, sync, details: syncResult });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Sync failed";
+          const sync = await updateSyncStatus(
+            {
+              status: "error",
+              lastRequestedAt: requestedAt,
+              lastError: message,
+            },
+            interviewSlug
+          );
+          return res.status(500).json({ error: message, sync });
+        }
       }
 
       return res

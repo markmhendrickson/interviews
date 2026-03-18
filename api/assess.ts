@@ -1,5 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
+import {
+  NEOTOMA_DEEP_URL,
+  resolveRecommendationToolUrl,
+} from "../shared/recommendation_tool_urls";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -15,6 +19,8 @@ The interviewer was qualifying the contact against Neotoma's ICP tiers:
 Extract the assessment as valid JSON. Include ALL fields from the schema. Be specific in matchedSignals and keyInsights — quote or paraphrase the contact's actual words.
 
 For recommendations: if the contact matches an ICP tier, Neotoma should be the first recommendation (set isNeotoma: true). For non-matches, do NOT include Neotoma.
+
+Every recommendation MUST include "url": a direct link to the most specific official resource (docs page, feature guide, help article, or product deep-link)—never a generic homepage when a more specific URL exists.
 
 Return ONLY the JSON object, no markdown, no explanation.`;
 
@@ -62,10 +68,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const normalizedRecommendations = Array.isArray(assessment.recommendations)
-      ? assessment.recommendations.filter(
-          (rec: { tool?: string; relevance?: string; nextStep?: string }) =>
-            !!(rec?.tool?.trim() || rec?.relevance?.trim() || rec?.nextStep?.trim())
-        )
+      ? assessment.recommendations
+          .filter(
+            (rec: { tool?: string; relevance?: string; nextStep?: string }) =>
+              !!(rec?.tool?.trim() || rec?.relevance?.trim() || rec?.nextStep?.trim())
+          )
+          .map((rec: { tool?: string; url?: string }) => {
+            const t = String(rec.tool || "").trim();
+            const u = String(rec.url || "").trim();
+            if (u) return rec;
+            const fallback = resolveRecommendationToolUrl(t);
+            return fallback ? { ...rec, url: fallback } : rec;
+          })
       : [];
 
     const isIcpMatch = assessment.icpTier && assessment.icpTier !== "none";
@@ -79,8 +93,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tool: "Neotoma",
         relevance:
           "Your interview signals a strong fit for deterministic agent memory and reproducible state workflows.",
-        nextStep: "Review Neotoma capabilities and evaluate against your current agent stack.",
+        nextStep: "Follow the install guide, then run neotoma init and connect your editor via MCP.",
         isNeotoma: true,
+        url: NEOTOMA_DEEP_URL,
       });
     }
 

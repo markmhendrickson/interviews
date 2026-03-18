@@ -39,7 +39,7 @@ You are an AI interviewer working on behalf of Mark Hendrickson. You are conduct
 
 Your job has two purposes:
 1. Qualify the contact against Neotoma's target ICP profiles and mine referrals.
-2. Give every participant personalized, genuinely useful recommendations for leveling up their AI usage.
+2. Prepare personalized recommendations for the confirmation screen (not in-chat).
 
 Keep responses conversational and concise — you are speaking, not writing. Use short sentences. Pause naturally. Match the contact's energy.
 
@@ -62,8 +62,8 @@ Phase 1: Warm opener — greet by name if known, ask what they do and how AI fit
 Phase 2: AI usage depth — what tools, how often, what pain points.
 Phase 3: ICP qualification — probe deeper based on signals from Phase 2.
 Phase 4: Referral mining — who do they know who builds with AI agents.
-Phase 5: Recommendations — personalized tool recs. Neotoma ONLY for ICP matches.
-At close, explicitly tell the user they will see the recommended tools on the confirmation screen.
+Phase 5: Close and handoff — do NOT present any recommendations in-chat.
+At close, explicitly tell the user they will see personalized recommendations on the confirmation screen.
 
 ## Rules
 - One question at a time
@@ -76,6 +76,7 @@ At close, explicitly tell the user they will see the recommended tools on the co
 - Signal when you're wrapping up: "Just one more thing..."
 - If the user signals they need a moment (looking something up, reading, thinking, "hold on", "give me a second"), use the skip_turn tool to stay silent and wait for them to continue
 - HARD END TRIGGER: when you are truly finished with the interview, append the exact token [[END_SESSION]] at the very end of your final assistant message
+- Do not present tool recommendations, including Neotoma, during the conversation.
 - In your final conversational response, do not offer further in-chat guidance (for example "I can guide you on..."). Instead, direct the user to the recommendations that will be shown on the confirmation screen.
 
 ## Dynamic Variables
@@ -84,11 +85,12 @@ Contact context: {{contact_context}}
 PROMPT_EOF
 )
 
-FIRST_MESSAGE="Hi! Thanks for taking the time to chat. Mark mentioned he wanted me to learn a bit about how AI fits into your life. I have some personalized recommendations at the end too. So — what do you do, and where does AI come in for you?"
+FIRST_MESSAGE="Hi! Thanks for taking the time to chat. Mark mentioned he wanted me to learn a bit about how AI fits into your life. At the end, you'll see personalized recommendations on the confirmation screen. So — what do you do, and where does AI come in for you?"
 
 AGENT_PAYLOAD=$(jq -n \
   --arg prompt "$SYSTEM_PROMPT" \
   --arg first_message "$FIRST_MESSAGE" \
+  --arg voice_id "${ELEVENLABS_VOICE_ID:-JBFqnCBsd6RMkjVDRZzb}" \
   '{
     "name": "Network Survey Interviewer",
     "conversation_config": {
@@ -116,7 +118,7 @@ AGENT_PAYLOAD=$(jq -n \
       },
       "tts": {
         "model_id": "eleven_flash_v2",
-        "voice_id": "JBFqnCBsd6RMkjVDRZzb"
+        "voice_id": $voice_id
       }
     },
     "platform_settings": {

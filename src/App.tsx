@@ -5,6 +5,8 @@ import {
   Link,
   Navigate,
   useParams,
+  useNavigate,
+  useLocation,
 } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 
@@ -34,11 +36,15 @@ type AppPhase = "welcome" | "interview" | "results";
 function Interview({
   interviewConfig,
   pathContactCode,
+  pathMode,
 }: {
   interviewConfig: InterviewConfig;
   pathContactCode?: string | null;
+  pathMode?: InterviewMode | null;
 }) {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
   const contactCode =
     pathContactCode?.trim() || searchParams.get("c")?.trim() || null;
   const [contact, setContact] = useState<Contact | null>(null);
@@ -88,6 +94,14 @@ function Interview({
   }, [contactCode, interviewConfig.slug, pathContactCode]);
 
   useEffect(() => {
+    if (!pathMode) return;
+    setMode(pathMode);
+    setPhase((currentPhase) =>
+      currentPhase === "welcome" ? "interview" : currentPhase
+    );
+  }, [pathMode]);
+
+  useEffect(() => {
     const sessionKey = COMPLETED_SESSION_KEY(interviewConfig.slug);
     const localKey = COMPLETED_LOCAL_KEY(interviewConfig.slug);
     try {
@@ -113,9 +127,26 @@ function Interview({
     }
   }, [interviewConfig.slug]);
 
+  const buildInterviewPath = (nextMode?: InterviewMode) => {
+    const basePath = pathContactCode
+      ? `/${interviewConfig.slug}/${encodeURIComponent(pathContactCode)}`
+      : `/${interviewConfig.slug}`;
+    if (!nextMode) return `${basePath}${location.search}`;
+    return `${basePath}/${nextMode}${location.search}`;
+  };
+
+  useEffect(() => {
+    // Keep interview mode explicit in the URL so browser back/forward
+    // can reliably move between text and voice states.
+    if (phase !== "interview") return;
+    if (pathMode) return;
+    navigate(buildInterviewPath(mode), { replace: true });
+  }, [mode, navigate, pathMode, phase]);
+
   const handleStart = (selectedMode: InterviewMode) => {
     setMode(selectedMode);
     setPhase("interview");
+    navigate(buildInterviewPath(selectedMode), { replace: false });
   };
 
   const handleInterviewComplete = (
@@ -154,10 +185,12 @@ function Interview({
     setTranscript([]);
     setMode("text");
     setPhase("welcome");
+    navigate(buildInterviewPath(), { replace: false });
   };
 
   const handleSwitchMode = (newMode: InterviewMode) => {
     setMode(newMode);
+    navigate(buildInterviewPath(newMode), { replace: false });
   };
 
   const handleTranscriptChange = (
@@ -249,26 +282,62 @@ function LandingPage() {
 }
 
 function InterviewRoute() {
-  const { interviewSlug, contactCode } = useParams();
+  const { interviewSlug, "*": restPath } = useParams();
   const interviewConfig = getInterviewConfigBySlug(interviewSlug);
   if (!interviewConfig) {
     return <Navigate to="/" replace />;
   }
+
+  const segments = (restPath || "").split("/").filter(Boolean);
+  let pathContactCode: string | null = null;
+  let pathMode: InterviewMode | null = null;
+
+  if (segments.length === 1) {
+    if (segments[0] === "text" || segments[0] === "voice") {
+      pathMode = segments[0];
+    } else {
+      pathContactCode = segments[0];
+    }
+  } else if (segments.length === 2) {
+    if (segments[1] !== "text" && segments[1] !== "voice") {
+      return <Navigate to={`/${interviewConfig.slug}`} replace />;
+    }
+    pathContactCode = segments[0];
+    pathMode = segments[1];
+  } else if (segments.length > 2) {
+    return <Navigate to={`/${interviewConfig.slug}`} replace />;
+  }
+
   return (
     <Interview
       interviewConfig={interviewConfig}
-      pathContactCode={contactCode ?? null}
+      pathContactCode={pathContactCode}
+      pathMode={pathMode}
     />
   );
 }
 
 function InterviewAdminRoute() {
+  const { interviewSlug, sessionId } = useParams();
+  const interviewConfig = getInterviewConfigBySlug(interviewSlug);
+  if (!interviewConfig) {
+    return <Navigate to="/" replace />;
+  }
+  return (
+    <AdminResults
+      interviewConfig={interviewConfig}
+      selectedSessionId={sessionId ?? null}
+    />
+  );
+}
+
+function InterviewAdminCodesRoute() {
   const { interviewSlug } = useParams();
   const interviewConfig = getInterviewConfigBySlug(interviewSlug);
   if (!interviewConfig) {
     return <Navigate to="/" replace />;
   }
-  return <AdminResults interviewConfig={interviewConfig} />;
+  return <AdminResults interviewConfig={interviewConfig} adminView="codes" />;
 }
 
 export default function App() {
@@ -279,9 +348,10 @@ export default function App() {
         path="/admin"
         element={<Navigate to={`/${getDefaultInterviewConfig().slug}/admin`} replace />}
       />
-      <Route path="/:interviewSlug/:contactCode" element={<InterviewRoute />} />
-      <Route path="/:interviewSlug" element={<InterviewRoute />} />
+      <Route path="/:interviewSlug/admin/codes" element={<InterviewAdminCodesRoute />} />
+      <Route path="/:interviewSlug/admin/:sessionId" element={<InterviewAdminRoute />} />
       <Route path="/:interviewSlug/admin" element={<InterviewAdminRoute />} />
+      <Route path="/:interviewSlug/*" element={<InterviewRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

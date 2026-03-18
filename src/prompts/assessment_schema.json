@@ -53,12 +53,15 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["tool", "relevance", "nextStep"],
+        "required": ["tool", "relevance", "nextStep", "url"],
         "properties": {
           "tool": { "type": "string", "description": "Tool or approach name" },
           "relevance": { "type": "string", "description": "Why it's relevant to them specifically" },
           "nextStep": { "type": "string", "description": "One concrete next step" },
-          "url": { "type": "string", "description": "Direct URL for the recommendation if known" },
+          "url": {
+            "type": "string",
+            "description": "Most specific official URL: help article, docs section, feature guide, or install guide—not a generic homepage when a deeper link exists. Use the tool registry url when recommending a listed tool; for unlisted tools, find the best official doc. Internal-only: use the interview path /{slug} only for 'Continue interview'."
+          },
           "isNeotoma": { "type": "boolean", "description": "True if this is the Neotoma recommendation" }
         }
       },
@@ -86,6 +89,29 @@
     "preferredAiTool": {
       "type": "string",
       "description": "The AI tool the contact uses most, for Neotoma install instructions targeting"
+    },
+    "painLanguage": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Exact words and phrases the contact used to describe their memory, state, or context problems — their vocabulary, not Neotoma's framing"
+    },
+    "firstWorkflow": {
+      "type": "string",
+      "description": "The specific workflow the contact would most likely try first if adopting Neotoma, inferred from the highest-pain use case they described"
+    },
+    "framingResonance": {
+      "type": "string",
+      "enum": ["deterministic_state", "memory_layer", "agent_reliability", "data_sovereignty", "other"],
+      "description": "Which framing the contact responded most strongly to during the conversation"
+    },
+    "adoptionBlockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What the contact said or implied would prevent them from trying Neotoma (setup complexity, unclear value, no perceived need, etc.)"
+    },
+    "existingMemoryApproach": {
+      "type": "string",
+      "description": "How the contact currently handles the problem Neotoma solves: custom scripts, JSON files, vector DB, platform memory, spreadsheets, nothing, etc."
     },
     "contactEmail": {
       "type": "string",

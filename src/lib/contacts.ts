@@ -1,5 +1,6 @@
 export interface Contact {
   code: string;
+  codes?: string[];
   name: string;
   email?: string;
   context?: string;

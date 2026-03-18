@@ -1,6 +1,3 @@
-Hi {{name}} - {{sender_name}} here.
+Hey {{name}}, it's {{sender_name}}! I'm working on something and would really love your perspective. It's a quick conversation personalized for you — just a few minutes, and you'll get some tailored recommendations at the end too. No pressure at all, but here's the link if you're up for it: {{share_url}}
 
-I'd love your input on something I'm working on. It's a short conversation personalized for you — should only take a few minutes, and you'll get some tailored recommendations at the end:
-{{share_url}}
-
-Thanks a lot.
+Thanks so much!

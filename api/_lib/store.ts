@@ -1,4 +1,9 @@
 import { kv } from "@vercel/kv";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 export interface Contact {
   code: string;
@@ -27,6 +32,8 @@ export interface SyncStatus {
   lastRequestedAt?: string;
   lastError?: string;
 }
+
+const execFileAsync = promisify(execFile);
 
 function getNamespace(): string {
   return (
@@ -59,6 +66,288 @@ function normalizeInterviewSlug(interviewSlug: string | undefined): string {
     .trim()
     .toLowerCase();
   return normalized || "ai";
+}
+
+function asString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeImportedCode(value: string | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (normalized.length < 2) return null;
+  return normalized.slice(0, 20);
+}
+
+function ensureUniqueCode(baseCode: string, usedCodes: Set<string>): string {
+  if (!usedCodes.has(baseCode)) {
+    usedCodes.add(baseCode);
+    return baseCode;
+  }
+  for (let i = 2; i < 10_000; i += 1) {
+    const suffix = String(i);
+    const candidate = `${baseCode.slice(0, Math.max(2, 20 - suffix.length))}${suffix}`;
+    if (!usedCodes.has(candidate)) {
+      usedCodes.add(candidate);
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to generate unique contact code for "${baseCode}"`);
+}
+
+function buildNameBasedCode(name: string, usedCodes: Set<string>): string | null {
+  const tokens = name
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9]/g, ""))
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) return null;
+
+  const first = tokens[0];
+  const last = tokens.length > 1 ? tokens[tokens.length - 1] : "";
+
+  const firstCandidate = normalizeImportedCode(first);
+  const firstLastCandidate = normalizeImportedCode(`${first}${last}`);
+
+  if (firstCandidate && !usedCodes.has(firstCandidate)) {
+    usedCodes.add(firstCandidate);
+    return firstCandidate;
+  }
+
+  if (firstLastCandidate && !usedCodes.has(firstLastCandidate)) {
+    usedCodes.add(firstLastCandidate);
+    return firstLastCandidate;
+  }
+
+  if (firstLastCandidate) {
+    return ensureUniqueCode(firstLastCandidate, usedCodes);
+  }
+  if (firstCandidate) {
+    return ensureUniqueCode(firstCandidate, usedCodes);
+  }
+  return null;
+}
+
+function mapNeotomaEntityToContact(
+  entity: Record<string, unknown>,
+  usedCodes: Set<string>
+): Contact | null {
+  const snapshot =
+    entity.snapshot && typeof entity.snapshot === "object"
+      ? (entity.snapshot as Record<string, unknown>)
+      : {};
+  const canonicalName = asString(entity.canonical_name);
+  const name = asString(snapshot.name) || asString(snapshot.full_name) || canonicalName;
+  if (!name) return null;
+
+  const code = buildNameBasedCode(name, usedCodes);
+  if (!code) return null;
+
+  const email = normalizeEmail(asString(snapshot.email));
+  const contextParts = [
+    asString(snapshot.context),
+    asString(snapshot.company),
+    asString(snapshot.title),
+    asString(snapshot.location),
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    code,
+    name,
+    email,
+    context: contextParts.length > 0 ? contextParts.join(" · ") : undefined,
+    source: "neotoma_sync",
+  };
+}
+
+function mapHttpContactToContact(
+  row: Record<string, unknown>,
+  usedCodes: Set<string>
+): Contact | null {
+  const name =
+    asString(row.name) || asString(row.full_name) || asString(row.canonical_name);
+  if (!name) return null;
+
+  const importedCode = normalizeImportedCode(
+    asString(row.code) || asString(row.contact_code)
+  );
+  const code = importedCode
+    ? ensureUniqueCode(importedCode, usedCodes)
+    : buildNameBasedCode(name, usedCodes);
+  if (!code) return null;
+
+  const contextParts = [
+    asString(row.context),
+    asString(row.company),
+    asString(row.title),
+    asString(row.location),
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    code,
+    name,
+    email: normalizeEmail(asString(row.email)),
+    context: contextParts.length > 0 ? contextParts.join(" · ") : undefined,
+    source: asString(row.source) || "neotoma_sync",
+  };
+}
+
+async function fetchNeotomaContactsViaHttp(): Promise<Contact[]> {
+  const endpoint = process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL?.trim();
+  if (!endpoint) return [];
+
+  const limit = Number.parseInt(process.env.INTERVIEWS_NEOTOMA_SYNC_LIMIT || "500", 10);
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 5000) : 500;
+  const timeoutMsRaw = Number.parseInt(
+    process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TIMEOUT_MS || "15000",
+    10
+  );
+  const timeoutMs =
+    Number.isFinite(timeoutMsRaw) && timeoutMsRaw >= 1000
+      ? Math.min(timeoutMsRaw, 120000)
+      : 15000;
+
+  const url = new URL(endpoint);
+  if (!url.searchParams.has("type")) url.searchParams.set("type", "contact");
+  if (!url.searchParams.has("limit")) url.searchParams.set("limit", String(safeLimit));
+
+  const headerName = (
+    process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_HEADER || "Authorization"
+  ).trim();
+  const token = process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_TOKEN?.trim();
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) {
+    headers[headerName] =
+      headerName.toLowerCase() === "authorization" ? `Bearer ${token}` : token;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to fetch Neotoma contacts via HTTP: ${message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Neotoma sync API returned ${response.status}: ${text.slice(0, 300) || "empty response"}`
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Neotoma sync API returned invalid JSON: ${message}`);
+  }
+
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object"
+      ? (Array.isArray((parsed as { contacts?: unknown[] }).contacts)
+          ? (parsed as { contacts: unknown[] }).contacts
+          : Array.isArray((parsed as { entities?: unknown[] }).entities)
+            ? (parsed as { entities: unknown[] }).entities
+            : [])
+      : [];
+
+  const usedCodes = new Set<string>();
+  const mapped: Contact[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const asRecord = row as Record<string, unknown>;
+    const contact =
+      asString(asRecord.name) || asString(asRecord.full_name)
+        ? mapHttpContactToContact(asRecord, usedCodes)
+        : mapNeotomaEntityToContact(asRecord, usedCodes);
+    if (contact) mapped.push(contact);
+  }
+  return mapped;
+}
+
+async function fetchNeotomaContactsViaCli(): Promise<Contact[]> {
+  const neotomaTargetEnv = (
+    process.env.INTERVIEWS_ADMIN_NEOTOMA_ENV ||
+    process.env.NEOTOMA_TARGET_ENV ||
+    process.env.NEOTOMA_ENV ||
+    "dev"
+  )
+    .trim()
+    .toLowerCase();
+  const envArg = neotomaTargetEnv.startsWith("prod") ? "prod" : "dev";
+  const cliBin = (process.env.NEOTOMA_CLI_BIN || "neotoma").trim();
+  const limit = Number.parseInt(process.env.INTERVIEWS_NEOTOMA_SYNC_LIMIT || "500", 10);
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 5000) : 500;
+
+  const childEnv = { ...process.env };
+  const configuredDataDir = process.env.INTERVIEWS_ADMIN_NEOTOMA_DATA_DIR?.trim();
+  if (configuredDataDir) {
+    childEnv.NEOTOMA_DATA_DIR = configuredDataDir;
+  } else if (!childEnv.NEOTOMA_DATA_DIR) {
+    const cursorMcpPath = join(homedir(), ".cursor", "mcp.json");
+    try {
+      const raw = await readFile(cursorMcpPath, "utf8");
+      const parsed = JSON.parse(raw) as {
+        mcpServers?: Record<string, { env?: Record<string, unknown> }>;
+      };
+      const mcpDataDir = parsed.mcpServers?.["neotoma-dev"]?.env?.NEOTOMA_DATA_DIR;
+      if (typeof mcpDataDir === "string" && mcpDataDir.trim()) {
+        childEnv.NEOTOMA_DATA_DIR = mcpDataDir.trim();
+      }
+    } catch {
+      // Optional local convenience fallback only.
+    }
+  }
+  if (process.env.INTERVIEWS_ADMIN_NEOTOMA_ENV?.trim()) {
+    childEnv.NEOTOMA_ENV = process.env.INTERVIEWS_ADMIN_NEOTOMA_ENV.trim();
+  }
+
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      cliBin,
+      [envArg, "entities", "list", "--type", "contact", "--limit", String(safeLimit)],
+      { env: childEnv }
+    ));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to fetch Neotoma contacts via CLI: ${message}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Neotoma CLI returned invalid JSON: ${message}`);
+  }
+
+  const rows =
+    parsed && typeof parsed === "object" && Array.isArray((parsed as { entities?: unknown[] }).entities)
+      ? ((parsed as { entities: unknown[] }).entities as Record<string, unknown>[])
+      : [];
+
+  const usedCodes = new Set<string>();
+  const mapped: Contact[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const contact = mapNeotomaEntityToContact(row, usedCodes);
+    if (contact) mapped.push(contact);
+  }
+  return mapped;
 }
 
 function contactIndexKey(interviewSlug: string): string {
@@ -264,4 +553,47 @@ export async function updateSyncStatus(
   };
   await kv.set(syncStatusKey(normalized), next);
   return next;
+}
+
+export async function syncContactsFromNeotoma(
+  interviewSlug = "ai"
+): Promise<{ imported: number; removed: number; skipped: number }> {
+  ensureKvConfigured();
+
+  const useHttpSyncSource = Boolean(
+    process.env.INTERVIEWS_ADMIN_NEOTOMA_SYNC_API_URL?.trim()
+  );
+  const fetched = useHttpSyncSource
+    ? await fetchNeotomaContactsViaHttp()
+    : await fetchNeotomaContactsViaCli();
+  const fetchedMap = new Map<string, Contact>();
+  for (const contact of fetched) fetchedMap.set(contact.code, contact);
+
+  const existing = await listContacts(interviewSlug);
+  const existingCodes = new Set(existing.map((contact) => contact.code));
+  const existingImportedCodes = new Set(
+    existing.filter((contact) => contact.source === "neotoma_sync").map((contact) => contact.code)
+  );
+
+  let imported = 0;
+  for (const contact of fetchedMap.values()) {
+    await kv.set(contactKey(contact.code, interviewSlug), contact);
+    if (!existingCodes.has(contact.code)) {
+      await kv.sadd(contactIndexKey(interviewSlug), contact.code);
+    }
+    imported += 1;
+  }
+
+  let removed = 0;
+  for (const code of existingImportedCodes) {
+    if (fetchedMap.has(code)) continue;
+    await removeContact(code, interviewSlug);
+    removed += 1;
+  }
+
+  return {
+    imported,
+    removed,
+    skipped: Math.max(0, fetched.length - fetchedMap.size),
+  };
 }

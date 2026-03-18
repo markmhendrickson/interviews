@@ -37,22 +37,19 @@ export default function Welcome({
             <h1 className="text-2xl font-semibold text-foreground mb-2">
               {contact ? `Hi ${contact.name}!` : interviewConfig.welcomeHeadline}
             </h1>
-            <div className="text-lg text-muted-foreground leading-relaxed space-y-3">
+            <div className="text-[15px] text-muted-foreground leading-[1.7] space-y-3">
               <p>{interviewConfig.welcomeDescription}</p>
               <p>
-                I want to hear from as many people as possible, so I set up a
-                short conversational format that can happen on your time — no
-                scheduling needed. Or book live time with me instead.
+                I set up an AI-powered conversational format so we can do
+                this on your schedule — no back-and-forth to find a time.
+                Or just book a call if you'd rather talk live.
               </p>
-              <p>
-                Conversations take about 5 minutes and include personalized
-                recommendations. You can always book live time afterward too.
+              <p className="text-muted-foreground/80">
+                Takes about 5 minutes. You'll get tailored suggestions at the end.
               </p>
             </div>
-            <p className="text-sm text-muted-foreground mt-4">
-              Thanks,
-              <br />
-              Mark
+            <p className="text-sm text-muted-foreground/70 mt-5">
+              — Mark
             </p>
           </div>
           <img
@@ -66,29 +63,8 @@ export default function Welcome({
           <p className="text-sm font-medium text-foreground mb-4">
             Choose how you want to continue
           </p>
-          <p className="text-xs text-muted-foreground mb-4">
-            Not either/or — you can still schedule live afterward.
-          </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-            <button
-              onClick={() => setSelectedMode("live")}
-              className={`flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all min-h-[132px] ${
-                selectedMode === "live"
-                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-500/5"
-              }`}
-            >
-              <CalendarDays className="w-6 h-6 flex-shrink-0" />
-              <span className="text-sm font-semibold">Live with Mark</span>
-              <span className={`text-xs ${selectedMode === "live" ? "text-emerald-600/90 dark:text-emerald-400/90" : "text-emerald-700/80 dark:text-emerald-400/80"}`}>
-                One-on-one call with me
-              </span>
-              <span className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80 mt-auto font-medium uppercase tracking-wide">
-                30 min
-              </span>
-            </button>
-
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
             <button
               onClick={() => setSelectedMode("voice")}
               className={`flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all min-h-[132px] ${
@@ -124,7 +100,29 @@ export default function Welcome({
                 ~5 min
               </span>
             </button>
+
+            <button
+              onClick={() => setSelectedMode("live")}
+              className={`flex flex-col items-center gap-2 p-4 rounded-lg border-2 transition-all min-h-[132px] ${
+                selectedMode === "live"
+                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-500/5"
+              }`}
+            >
+              <CalendarDays className="w-6 h-6 flex-shrink-0" />
+              <span className="text-sm font-semibold">Live with Mark</span>
+              <span className={`text-xs ${selectedMode === "live" ? "text-emerald-600/90 dark:text-emerald-400/90" : "text-emerald-700/80 dark:text-emerald-400/80"}`}>
+                One-on-one call with me
+              </span>
+              <span className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80 mt-auto font-medium uppercase tracking-wide">
+                30 min
+              </span>
+            </button>
           </div>
+
+          <p className="text-xs text-muted-foreground mb-4 text-center">
+            Not either/or — you can still schedule live afterward.
+          </p>
 
           <button
             onClick={handlePrimaryAction}
