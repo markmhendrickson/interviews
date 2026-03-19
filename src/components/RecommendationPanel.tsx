@@ -590,7 +590,7 @@ export default function RecommendationPanel({
         {transcriptForDisplay.length > 0 && (
           <div className="bg-card border border-border rounded-xl p-5 mt-6">
             <h3 className="text-sm font-semibold text-foreground mb-2">Transcript</h3>
-            <div className="max-h-64 overflow-y-auto space-y-2">
+            <div className="space-y-2">
               {transcriptForDisplay.map((msg, i) => (
                 <p
                   key={`${msg.role}-${i}`}

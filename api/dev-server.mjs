@@ -76,6 +76,68 @@ function asString(value) {
   return trimmed || undefined;
 }
 
+function normalizeIcpTier(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "none";
+  if (
+    raw === "tier1_infra" ||
+    raw === "tier1_agent" ||
+    raw === "tier1_operator" ||
+    raw === "tier2_toolchain" ||
+    raw === "none"
+  ) {
+    return raw;
+  }
+  const compact = raw.replace(/[\s_-]+/g, "");
+  if (compact === "tier1infra" || compact === "infrastructureengineer") return "tier1_infra";
+  if (compact === "tier1agent" || compact === "agentbuilder") return "tier1_agent";
+  if (compact === "tier1operator" || compact === "tier1ainativeoperator") return "tier1_operator";
+  if (compact === "tier2" || compact === "tier2toolchain" || compact === "toolchainintegrator") {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
+function inferIcpTier(assessment) {
+  const matchedSignals = Array.isArray(assessment?.matchedSignals)
+    ? assessment.matchedSignals.map((s) => String(s || "").toLowerCase()).filter(Boolean)
+    : [];
+  const antiSignals = Array.isArray(assessment?.antiIcpSignals)
+    ? assessment.antiIcpSignals.map((s) => String(s || "").toLowerCase()).filter(Boolean)
+    : [];
+  const tools = Array.isArray(assessment?.toolsUsed)
+    ? assessment.toolsUsed.map((t) => String(t || "").toLowerCase()).filter(Boolean)
+    : [];
+  const profileText = String(assessment?.icpProfile || "").trim().toLowerCase();
+  const summaryText = String(assessment?.personSummary || "").trim().toLowerCase();
+  const evidence = `${matchedSignals.join(" ")} ${profileText} ${summaryText} ${tools.join(" ")}`;
+  const confidence = Number(assessment?.matchConfidence || 0);
+
+  if (/(infra|observability|evaluation|runtime)/.test(evidence)) return "tier1_infra";
+  if (/(agent builder|multi-step|tool calling|agent workflows?)/.test(evidence)) return "tier1_agent";
+  if (/(toolchain|framework|integrator|sdk|devtool)/.test(evidence)) return "tier2_toolchain";
+  if (
+    confidence >= 80 &&
+    matchedSignals.length >= 2 &&
+    antiSignals.length <= 1 &&
+    /(cursor|claude|mcp|automation|engineer|developer|operator)/.test(evidence)
+  ) {
+    return "tier1_operator";
+  }
+  if (confidence >= 65 && matchedSignals.length >= 2 && antiSignals.length <= 1) {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
+function defaultIcpProfileForTier(tier) {
+  if (tier === "tier1_infra") return "AI Infrastructure Engineer";
+  if (tier === "tier1_agent") return "Agent System Builder";
+  if (tier === "tier1_operator") return "AI-native Operator";
+  if (tier === "tier2_toolchain") return "Toolchain Integrator";
+  return null;
+}
+
 function normalizeImportedCode(value) {
   if (!value) return null;
   const normalized = String(value)
@@ -387,6 +449,12 @@ contactName, icpTier, icpProfile, matchConfidence, matchedSignals, antiIcpSignal
     const text = response.content?.[0]?.type === "text" ? response.content[0].text : "{}";
     const raw = text.match(/\{[\s\S]*\}/)?.[0] || "{}";
     const assessment = JSON.parse(raw);
+    const normalizedTier = normalizeIcpTier(assessment.icpTier);
+    const repairedTier = normalizedTier === "none" ? inferIcpTier(assessment) : normalizedTier;
+    assessment.icpTier = repairedTier;
+    if (!assessment.icpProfile && repairedTier !== "none") {
+      assessment.icpProfile = defaultIcpProfileForTier(repairedTier);
+    }
     assessment.sessionId = sessionId;
     assessment.timestamp = new Date().toISOString();
     assessment.durationSeconds = durationSeconds || 0;

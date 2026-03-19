@@ -79,6 +79,58 @@ export function detectToolsUsed(text: string): string[] {
   ).map((matcher) => matcher.label);
 }
 
+export type CanonicalIcpTier =
+  | "tier1_infra"
+  | "tier1_agent"
+  | "tier1_operator"
+  | "tier2_toolchain"
+  | "none";
+
+/**
+ * Infer ICP tier from assessment fields when stored tier is missing or "none".
+ * Used for display so high-confidence, strong-signal interviews show the correct badge.
+ */
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((s) => String(s ?? "").toLowerCase())
+    .filter(Boolean);
+}
+
+export function inferIcpTierForDisplay(assessment: {
+  matchConfidence?: number;
+  matchedSignals?: string[];
+  antiIcpSignals?: string[];
+  icpProfile?: string | null;
+  personSummary?: string;
+  toolsUsed?: string[];
+}): CanonicalIcpTier {
+  const matchedSignals = asStringArray(assessment.matchedSignals);
+  const antiSignals = asStringArray(assessment.antiIcpSignals);
+  const tools = asStringArray(assessment.toolsUsed);
+  const profileText = String(assessment.icpProfile ?? "").trim().toLowerCase();
+  const summaryText = String(assessment.personSummary ?? "").trim().toLowerCase();
+  const evidence = `${matchedSignals.join(" ")} ${profileText} ${summaryText} ${tools.join(" ")}`;
+  const confidence = Number(assessment.matchConfidence ?? 0);
+
+  if (/(infra|observability|evaluation|runtime)/.test(evidence)) return "tier1_infra";
+  if (/(agent builder|multi-step|tool calling|agent workflows?)/.test(evidence))
+    return "tier1_agent";
+  if (/(toolchain|framework|integrator|sdk|devtool)/.test(evidence)) return "tier2_toolchain";
+  if (
+    confidence >= 80 &&
+    matchedSignals.length >= 2 &&
+    antiSignals.length <= 1 &&
+    /(cursor|claude|mcp|automation|engineer|developer|operator)/.test(evidence)
+  ) {
+    return "tier1_operator";
+  }
+  if (confidence >= 65 && matchedSignals.length >= 2 && antiSignals.length <= 1) {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
 export function buildFallbackAssessment(params: {
   transcript: TranscriptMessage[];
   sessionId: string;

@@ -5,7 +5,7 @@ export function getAnonymousNameFirstMessage(
   interviewConfig: InterviewConfig
 ): string {
   const openingLead = interviewConfig.welcomeDescription;
-  return `Hi — thanks for taking the time. ${openingLead} Before we get into tools, what's your name?`;
+  return `Hi — thanks for taking the time to chat. ${openingLead} Before we dive in, what's your name?`;
 }
 
 export function getInterviewOpeningMessage(

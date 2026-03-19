@@ -13,7 +13,7 @@ import {
   RefreshCw,
   ExternalLink,
 } from "lucide-react";
-import { detectToolsUsed, type Assessment } from "../lib/assessment";
+import { detectToolsUsed, inferIcpTierForDisplay, type Assessment } from "../lib/assessment";
 import {
   getSyncStatus,
   listContacts,
@@ -40,6 +40,10 @@ function isStoredResult(value: unknown): value is StoredResult {
     return false;
   }
   if (!record.assessment || typeof record.assessment !== "object") {
+    return false;
+  }
+  const timestamp = (record.assessment as { timestamp?: unknown }).timestamp;
+  if (typeof timestamp !== "string" || timestamp.trim() === "") {
     return false;
   }
   return true;
@@ -522,8 +526,10 @@ function ResultDetail({
   );
   const toolsUsed = Array.from(new Set([...(a.toolsUsed || []), ...transcriptToolMentions]));
   const normalizedIcpTier = normalizeIcpTier(a.icpTier);
-  const isTier1Match = normalizedIcpTier.startsWith("tier1_");
-  const isTier2Match = normalizedIcpTier === "tier2_toolchain";
+  const displayTier =
+    normalizedIcpTier !== "none" ? normalizedIcpTier : inferIcpTierForDisplay(a);
+  const isTier1Match = displayTier.startsWith("tier1_");
+  const isTier2Match = displayTier === "tier2_toolchain";
   const isInProgress =
     result.partial === true ||
     a.personSummary.trim().toLowerCase() === "interview in progress." ||
@@ -559,15 +565,15 @@ function ResultDetail({
           >
             {interviewStatus}
           </span>
-          {normalizedIcpTier !== "none" && (
+          {displayTier !== "none" && (
           <span
             className={`text-xs font-medium px-2.5 py-1 rounded-full ${
-              normalizedIcpTier !== "none"
+              displayTier !== "none"
                 ? "bg-primary/10 text-primary"
                 : "bg-secondary text-muted-foreground"
             }`}
           >
-            {TIER_LABELS[normalizedIcpTier]}
+            {TIER_LABELS[displayTier]}
           </span>
           )}
           <span
@@ -579,11 +585,11 @@ function ResultDetail({
       </div>
 
       <div className="space-y-6">
-        {normalizedIcpTier !== "none" && (
+        {displayTier !== "none" && (
           <section className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-semibold text-foreground mb-2">Tier assessment</h2>
             <p className="text-sm text-muted-foreground mb-3">
-              {TIER_ASSESSMENT_SUMMARY[normalizedIcpTier]}
+              {TIER_ASSESSMENT_SUMMARY[displayTier]}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
               <div
@@ -1288,6 +1294,10 @@ export default function AdminResults({
                   .map((result) => (
                     (() => {
                       const normalizedTier = normalizeIcpTier(result.assessment.icpTier);
+                      const displayTier =
+                        normalizedTier !== "none"
+                          ? normalizedTier
+                          : inferIcpTierForDisplay(result.assessment);
                       return (
                         <tr
                           key={result.sessionId}
@@ -1308,12 +1318,12 @@ export default function AdminResults({
                           <td className="px-4 py-3">
                             <span
                               className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                normalizedTier !== "none"
+                                displayTier !== "none"
                                   ? "bg-primary/10 text-primary"
                                   : "bg-secondary text-muted-foreground"
                               }`}
                             >
-                              {TIER_LABELS[normalizedTier]}
+                              {TIER_LABELS[displayTier]}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-sm text-muted-foreground">

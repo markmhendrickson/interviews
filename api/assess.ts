@@ -19,11 +19,99 @@ The interviewer was qualifying the contact against Neotoma's ICP tiers:
 
 Extract the assessment as valid JSON. Include ALL fields from the schema. Be specific in matchedSignals and keyInsights — quote or paraphrase the contact's actual words.
 
-For recommendations: if the contact matches an ICP tier, Neotoma should be the first recommendation (set isNeotoma: true). For non-matches, do NOT include Neotoma.
+For recommendations:
+- If the contact matches an ICP tier, Neotoma should be the first recommendation (set isNeotoma: true) and return 2-4 total recommendations with at least one non-Neotoma item.
+- For non-matches, do NOT include Neotoma and return 1-3 alternatives.
 
 Every recommendation MUST include "url": a direct link to the most specific official resource (docs page, feature guide, help article, or product deep-link)—never a generic homepage when a more specific URL exists.
 
 Return ONLY the JSON object, no markdown, no explanation.`;
+
+type CanonicalIcpTier =
+  | "tier1_infra"
+  | "tier1_agent"
+  | "tier1_operator"
+  | "tier2_toolchain"
+  | "none";
+
+function normalizeIcpTier(value: unknown): CanonicalIcpTier {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "none";
+  if (
+    raw === "tier1_infra" ||
+    raw === "tier1_agent" ||
+    raw === "tier1_operator" ||
+    raw === "tier2_toolchain" ||
+    raw === "none"
+  ) {
+    return raw;
+  }
+
+  const compact = raw.replace(/[\s_-]+/g, "");
+  if (compact === "tier1infra" || compact === "infrastructureengineer") {
+    return "tier1_infra";
+  }
+  if (compact === "tier1agent" || compact === "agentbuilder") {
+    return "tier1_agent";
+  }
+  if (compact === "tier1operator" || compact === "tier1ainativeoperator") {
+    return "tier1_operator";
+  }
+  if (compact === "tier2" || compact === "tier2toolchain" || compact === "toolchainintegrator") {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
+function toLowerText(input: unknown): string {
+  return String(input || "").trim().toLowerCase();
+}
+
+function inferIcpTier(assessment: Record<string, unknown>): CanonicalIcpTier {
+  const matchedSignals = Array.isArray(assessment.matchedSignals)
+    ? assessment.matchedSignals.map((s) => String(s || "").toLowerCase()).filter(Boolean)
+    : [];
+  const antiSignals = Array.isArray(assessment.antiIcpSignals)
+    ? assessment.antiIcpSignals.map((s) => String(s || "").toLowerCase()).filter(Boolean)
+    : [];
+  const tools = Array.isArray(assessment.toolsUsed)
+    ? assessment.toolsUsed.map((t) => String(t || "").toLowerCase()).filter(Boolean)
+    : [];
+  const profileText = toLowerText(assessment.icpProfile);
+  const summaryText = toLowerText(assessment.personSummary);
+  const evidence = `${matchedSignals.join(" ")} ${profileText} ${summaryText} ${tools.join(" ")}`;
+  const confidence = Number(assessment.matchConfidence || 0);
+
+  if (/(infra|observability|evaluation|runtime)/.test(evidence)) {
+    return "tier1_infra";
+  }
+  if (/(agent builder|multi-step|tool calling|agent workflows?)/.test(evidence)) {
+    return "tier1_agent";
+  }
+  if (/(toolchain|framework|integrator|sdk|devtool)/.test(evidence)) {
+    return "tier2_toolchain";
+  }
+  if (
+    confidence >= 80 &&
+    matchedSignals.length >= 2 &&
+    antiSignals.length <= 1 &&
+    /(cursor|claude|mcp|automation|engineer|developer|operator)/.test(evidence)
+  ) {
+    return "tier1_operator";
+  }
+  if (confidence >= 65 && matchedSignals.length >= 2 && antiSignals.length <= 1) {
+    return "tier2_toolchain";
+  }
+  return "none";
+}
+
+function defaultIcpProfileForTier(tier: CanonicalIcpTier): string | null {
+  if (tier === "tier1_infra") return "AI Infrastructure Engineer";
+  if (tier === "tier1_agent") return "Agent System Builder";
+  if (tier === "tier1_operator") return "AI-native Operator";
+  if (tier === "tier2_toolchain") return "Toolchain Integrator";
+  return null;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -68,6 +156,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    const normalizedTier = normalizeIcpTier(assessment.icpTier);
+    const repairedTier =
+      normalizedTier === "none"
+        ? inferIcpTier(assessment as Record<string, unknown>)
+        : normalizedTier;
+    assessment.icpTier = repairedTier;
+    if (!assessment.icpProfile && repairedTier !== "none") {
+      assessment.icpProfile = defaultIcpProfileForTier(repairedTier);
+    }
+
     const normalizedRecommendations = Array.isArray(assessment.recommendations)
       ? assessment.recommendations
           .filter(
@@ -83,14 +181,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           })
       : [];
 
-    const isIcpMatch = assessment.icpTier && assessment.icpTier !== "none";
+    const isNeotomaRecommendation = (rec: { isNeotoma?: boolean; tool?: string }) =>
+      Boolean(rec?.isNeotoma || /neotoma/i.test(String(rec?.tool || "")));
+
+    const isIcpMatch = repairedTier !== "none";
     const hasNeotomaRecommendation = normalizedRecommendations.some(
-      (rec: { isNeotoma?: boolean; tool?: string }) =>
-        rec?.isNeotoma || /neotoma/i.test(String(rec?.tool || ""))
+      isNeotomaRecommendation
     );
 
-    if (isIcpMatch && !hasNeotomaRecommendation) {
-      normalizedRecommendations.unshift({
+    let finalRecommendations = normalizedRecommendations.filter(
+      (rec: { isNeotoma?: boolean; tool?: string }) =>
+        isIcpMatch || !isNeotomaRecommendation(rec)
+    );
+
+    const hasNeotomaAfterFilter = finalRecommendations.some(
+      (rec: { isNeotoma?: boolean; tool?: string }) =>
+        isNeotomaRecommendation(rec)
+    );
+
+    if (isIcpMatch && !hasNeotomaAfterFilter) {
+      finalRecommendations.unshift({
         tool: "Neotoma",
         relevance:
           "Your interview signals a strong fit for deterministic agent memory and reproducible state workflows.",
@@ -100,7 +210,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    assessment.recommendations = normalizedRecommendations;
+    const nonNeotomaCount = finalRecommendations.filter(
+      (rec: { isNeotoma?: boolean; tool?: string }) => !isNeotomaRecommendation(rec)
+    ).length;
+    if (isIcpMatch && nonNeotomaCount === 0) {
+      finalRecommendations.push({
+        tool: "LangGraph",
+        relevance:
+          "LangGraph helps model explicit agent state transitions, which is useful when teams report context loss and brittle workflows.",
+        nextStep:
+          "Work through the LangGraph intro and map one real workflow to explicit state nodes and transitions.",
+        url:
+          resolveRecommendationToolUrl("LangGraph") ||
+          "https://langchain-ai.github.io/langgraph/tutorials/introduction/",
+      });
+    }
+
+    if (finalRecommendations.length === 0) {
+      finalRecommendations = [
+        {
+          tool: "Continue interview",
+          relevance:
+            "The transcript did not produce enough clear signals for high-confidence tool recommendations.",
+          nextStep:
+            "Run another interview with concrete examples of your current stack, failure modes, and desired outcomes.",
+        },
+      ];
+    }
+
+    assessment.recommendations = finalRecommendations;
     assessment.sessionId = sessionId;
     assessment.timestamp = new Date().toISOString();
     assessment.durationSeconds = durationSeconds || 0;

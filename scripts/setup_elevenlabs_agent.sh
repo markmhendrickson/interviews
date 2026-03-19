@@ -85,7 +85,7 @@ Contact context: {{contact_context}}
 PROMPT_EOF
 )
 
-FIRST_MESSAGE="Hi! Thanks for taking the time to chat. Mark mentioned he wanted me to learn a bit about how AI fits into your life. At the end, you'll see personalized recommendations on the confirmation screen. So — what do you do, and where does AI come in for you?"
+FIRST_MESSAGE="Hi! Thanks for taking the time to chat. Mark mentioned he wanted me to learn a bit about how AI fits into your life. At the end, you'll see personalized recommendations on the confirmation screen. Before we dive in, what's your name?"
 
 AGENT_PAYLOAD=$(jq -n \
   --arg prompt "$SYSTEM_PROMPT" \

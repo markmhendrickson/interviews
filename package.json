@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently \"node api/dev-server.mjs\" \"vite\"",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "reprocess:assessments": "node scripts/reprocess_interview_assessments.mjs"
   },
   "dependencies": {
     "@elevenlabs/client": "^0.15.2",

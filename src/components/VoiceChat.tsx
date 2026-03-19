@@ -16,6 +16,7 @@ import type { Contact } from "../lib/contacts";
 import type { Assessment } from "../lib/assessment";
 import { buildFallbackAssessment, generateSessionId } from "../lib/assessment";
 import { extractAnonymousContactIdentity } from "../lib/contact_identity";
+import { getAnonymousNameFirstMessage } from "../lib/interview_opening";
 
 import { enforceSingleTrailingQuestion } from "../lib/turn_rules";
 import type { InterviewConfig } from "../interviews/registry";
@@ -84,7 +85,6 @@ const AGENT_ID_LOOKS_MALFORMED =
 const HARD_END_SESSION_TOKEN = "[[END_SESSION]]";
 const RESUME_VERBALIZE_PROMPT_TOKEN = "[[RESUME_VERBALIZE_LAST_AI_TURN]]";
 
-
 function getReplayAssistantExcerpt(messages: Message[]): string | null {
   const lastAssistantMessage = [...messages]
     .reverse()
@@ -128,6 +128,34 @@ function isLikelyRestartIntroMessage(message: string): boolean {
   );
 }
 
+function buildVoiceProsodyGuidance(contact: Contact | null): string {
+  const baseRules = [
+    "Voice style guidance:",
+    "- Keep cadence smooth and conversational with no dramatic pauses around names.",
+    "- Use the contact name sparingly (greeting and occasional confirmation only).",
+    "- Do not address the contact by name in consecutive turns.",
+    "- Avoid vocative phrasing like ', Name,' in the middle of a sentence.",
+  ];
+  const contactName = String(contact?.name || "").trim();
+  if (!contactName) {
+    return baseRules.join("\n");
+  }
+  return [
+    ...baseRules,
+    `- For this session, if you use the name "${contactName}", keep it naturally integrated and no more than once every 3-4 turns.`,
+  ].join("\n");
+}
+
+function estimateAutoEndDelayMs(finalAssistantText: string): number {
+  const text = String(finalAssistantText || "").trim();
+  if (!text) return 3200;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const punctuationPauses = (text.match(/[,.!?;:]/g) || []).length;
+  const estimated =
+    2200 + words * 260 + Math.min(8, punctuationPauses) * 140;
+  return Math.max(3200, Math.min(10000, estimated));
+}
+
 export default function VoiceChat({
   contact,
   shareCode,
@@ -143,6 +171,7 @@ export default function VoiceChat({
   const [messages, setMessages] = useState<Message[]>(initialTranscript);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [isEndingConversation, setIsEndingConversation] = useState(false);
   const [sessionAttempt, setSessionAttempt] = useState(0);
   const [copiedDebugInfo, setCopiedDebugInfo] = useState(false);
   const [sessionId] = useState(generateSessionId);
@@ -180,6 +209,7 @@ export default function VoiceChat({
   const resumeStartedAtRef = useRef<number | null>(null);
   const expectedReplayAssistantMessageRef = useRef<string | null>(null);
   const resumeAudioUnmuteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoEndFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastIncomingMessageRef = useRef<{
     role: "user" | "assistant";
     content: string;
@@ -223,6 +253,13 @@ export default function VoiceChat({
     if (resumeAudioUnmuteTimer.current) {
       clearTimeout(resumeAudioUnmuteTimer.current);
       resumeAudioUnmuteTimer.current = null;
+    }
+  };
+
+  const clearAutoEndFallbackTimer = () => {
+    if (autoEndFallbackTimer.current) {
+      clearTimeout(autoEndFallbackTimer.current);
+      autoEndFallbackTimer.current = null;
     }
   };
 
@@ -320,6 +357,20 @@ export default function VoiceChat({
     await completeInterview(finalTranscript);
   }, [completeInterview]);
 
+  const finalizeAutoEndAfterSpeech = useCallback(() => {
+    if (hasTriggeredAutoEnd.current || hasHandledEnd.current) return;
+    hasTriggeredAutoEnd.current = true;
+    clearAutoEndFallbackTimer();
+    const activeConversation = conversationRef.current;
+    if (activeConversation) {
+      void requestSessionClose(activeConversation).finally(() => {
+        void handleEnd();
+      });
+      return;
+    }
+    void handleEnd();
+  }, [handleEnd, requestSessionClose]);
+
   useEffect(() => {
     const sendAbandon = () => {
       if (hasCompleted.current || hasSentAbandon.current || !hasStarted.current) return;
@@ -379,6 +430,7 @@ export default function VoiceChat({
     resumeStartedAtRef.current = null;
     expectedReplayAssistantMessageRef.current = null;
     clearResumeAudioUnmuteTimer();
+    clearAutoEndFallbackTimer();
     connectingSince.current = Date.now();
 
     async function startVoice() {
@@ -438,9 +490,16 @@ export default function VoiceChat({
             closeCode?: number;
             closeReason?: string;
           }) => {
+            const userMsgCount = countUserMessages(messagesRef.current);
             if (cancelled) return;
             if (isUnmounting.current) return;
             if (isSwitchingMode.current) return;
+            const isExpectedTeardown =
+              hasUserEnded.current ||
+              hasHandledEnd.current ||
+              hasCompleted.current ||
+              hasRequestedSessionClose.current;
+            if (isExpectedTeardown) return;
             if (hasTerminalError.current) return;
             const disconnectText = `${details?.message ?? ""} ${details?.closeReason ?? ""}`.toLowerCase();
             if (details?.reason === "error" && /quota|limit|billing|payment/.test(disconnectText)) {
@@ -454,7 +513,7 @@ export default function VoiceChat({
             }
             // Do not finalize interview on startup/transport disconnect if no
             // user content exists yet; keep user on voice screen with error state.
-            if (countUserMessages(messagesRef.current) === 0) {
+            if (userMsgCount === 0) {
               hasTerminalError.current = true;
               clearConnectFailSafe();
               setStatus("error");
@@ -620,15 +679,13 @@ export default function VoiceChat({
               !hasTriggeredAutoEnd.current &&
               !hasHandledEnd.current
             ) {
-              hasTriggeredAutoEnd.current = true;
-              const activeConversation = conversationRef.current;
-              if (activeConversation) {
-                void requestSessionClose(activeConversation).finally(() => {
-                  void handleEnd();
-                });
-              } else {
-                void handleEnd();
-              }
+              clearAutoEndFallbackTimer();
+              // Estimate playback window from final message length, then end.
+              const autoEndDelayMs = estimateAutoEndDelayMs(displayMessage);
+              autoEndFallbackTimer.current = setTimeout(() => {
+                if (cancelled || isUnmounting.current) return;
+                finalizeAutoEndAfterSpeech();
+              }, autoEndDelayMs);
             }
           },
           onError: (message: string) => {
@@ -681,21 +738,33 @@ export default function VoiceChat({
           let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
           try {
             const contactSnapshot = contactRef.current;
+            const isAnonymous = !contactSnapshot?.name?.trim();
             const dynamicVariables: Record<string, string> = {
               contact_name: contactSnapshot?.name?.trim() || "there",
               contact_context: contactSnapshot?.context?.trim() || "",
             };
+            const overrides = isAnonymous
+              ? {
+                  agent: {
+                    firstMessage: getAnonymousNameFirstMessage(interviewConfig),
+                  },
+                }
+              : undefined;
+            // Signed URL config does not allow first_message override; only pass overrides when using agentId.
+            const useOverrides = overrides && authMode !== "signed_url";
             const sessionConfig =
               authMode === "signed_url" && signedUrl
                 ? {
                     ...baseConfig,
                     dynamicVariables,
+                    ...(useOverrides ? { overrides } : {}),
                     signedUrl,
                     connectionType,
                   }
                 : {
                     ...baseConfig,
                     dynamicVariables,
+                    ...(useOverrides ? { overrides } : {}),
                     agentId: AGENT_ID,
                     connectionType,
                   };
@@ -735,6 +804,14 @@ export default function VoiceChat({
                 return;
               }
               conversationRef.current = session;
+              try {
+                session.sendContextualUpdate(
+                  buildVoiceProsodyGuidance(contactRef.current)
+                );
+              } catch {
+                // Best-effort guidance only.
+              }
+              
               if (shouldResumeFromTranscript) {
                 isResumeAudioGuardActive.current = true;
                 resumeStartedAtRef.current = Date.now();
@@ -808,6 +885,7 @@ export default function VoiceChat({
       isUnmounting.current = true;
       clearConnectFailSafe();
       clearResumeAudioUnmuteTimer();
+      clearAutoEndFallbackTimer();
       isResumeAudioGuardActive.current = false;
       resumeStartedAtRef.current = null;
       expectedReplayAssistantMessageRef.current = null;
@@ -826,6 +904,7 @@ export default function VoiceChat({
     shareCode,
     shouldResumeFromTranscript,
     stopConversation,
+    finalizeAutoEndAfterSpeech,
   ]);
 
   const toggleMicMute = () => {
@@ -847,15 +926,21 @@ export default function VoiceChat({
   };
 
   const endConversation = async () => {
+    if (isEndingConversation) return;
+    setIsEndingConversation(true);
     hasUserEnded.current = true;
     hasHandledEnd.current = true;
     const finalTranscript = messagesRef.current;
     const activeConversation = conversationRef.current;
     conversationRef.current = null;
 
-    await requestSessionClose(activeConversation);
-
-    await completeInterview(finalTranscript);
+    try {
+      await requestSessionClose(activeConversation);
+      await completeInterview(finalTranscript);
+    } finally {
+      // In the normal flow we redirect away; this is a safety reset if completion fails.
+      setIsEndingConversation(false);
+    }
   };
 
   const retryConnection = () => {
@@ -870,6 +955,7 @@ export default function VoiceChat({
     resumeStartedAtRef.current = null;
     expectedReplayAssistantMessageRef.current = null;
     clearResumeAudioUnmuteTimer();
+    clearAutoEndFallbackTimer();
     connectingSince.current = Date.now();
     setErrorMessage("");
     setStatus("connecting");
@@ -1118,9 +1204,17 @@ export default function VoiceChat({
               </button>
               <button
                 onClick={endConversation}
-                className="flex h-12 w-12 items-center justify-center rounded-full bg-[#a85f50] text-white transition-colors hover:bg-[#925244]"
+                disabled={isEndingConversation}
+                aria-label={
+                  isEndingConversation ? "Ending conversation" : "End conversation"
+                }
+                className="flex h-12 w-12 items-center justify-center rounded-full bg-[#a85f50] text-white transition-colors hover:bg-[#925244] disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                <Phone className="w-5 h-5 rotate-[135deg]" />
+                {isEndingConversation ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Phone className="w-5 h-5 rotate-[135deg]" />
+                )}
               </button>
             </>
           )}

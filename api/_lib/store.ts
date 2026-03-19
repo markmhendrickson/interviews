@@ -516,8 +516,24 @@ export async function upsertResult(input: {
       ? Math.max(0, Math.floor(input.messageCount))
       : existing?.messageCount;
   const normalizedContactCode = input.contactCode?.trim().toLowerCase() || existing?.contactCode;
+  const existingAssessment = existing?.assessment;
+  const mergedAssessment = input.assessment ?? existingAssessment;
+  const normalizedAssessment = mergedAssessment
+    ? {
+        ...mergedAssessment,
+        sessionId: String(mergedAssessment.sessionId || sessionId),
+        timestamp:
+          typeof mergedAssessment.timestamp === "string" &&
+          mergedAssessment.timestamp.trim() !== ""
+            ? mergedAssessment.timestamp
+            : new Date().toISOString(),
+      }
+    : {
+        sessionId,
+        timestamp: new Date().toISOString(),
+      };
   const payload: StoredResult = {
-    assessment: input.assessment ?? existing?.assessment,
+    assessment: normalizedAssessment,
     transcript: input.transcript || existing?.transcript || [],
     storedAt: new Date().toISOString(),
     partial: Boolean(input.partial),
