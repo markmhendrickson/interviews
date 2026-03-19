@@ -70,6 +70,36 @@ function normalizeCode(code) {
   return String(code || "").trim().toLowerCase();
 }
 
+function resolveRecommendationToolUrl(toolName) {
+  const raw = String(toolName || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw.includes("chatgpt")) {
+    return "https://help.openai.com/en/articles/9275245-using-chatgpt-s-memory-feature";
+  }
+  if (raw.includes("claude")) {
+    return "https://support.claude.com/en/articles/9517075-what-are-projects";
+  }
+  if (raw.includes("perplexity")) {
+    return "https://www.perplexity.ai/help-center";
+  }
+  if (raw.includes("notion")) {
+    return "https://www.notion.so/help/notion-ai";
+  }
+  if (raw.includes("zapier")) {
+    return "https://help.zapier.com/hc/en-us";
+  }
+  if (raw.includes("otter")) {
+    return "https://help.otter.ai/hc/en-us/articles/360045239473-Record-and-review-your-conversations";
+  }
+  if (raw.includes("langgraph")) {
+    return "https://langchain-ai.github.io/langgraph/tutorials/introduction/";
+  }
+  if (raw.includes("neotoma")) {
+    return "https://github.com/markmhendrickson/neotoma/blob/main/install.md";
+  }
+  return null;
+}
+
 function asString(value) {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -136,6 +166,143 @@ function defaultIcpProfileForTier(tier) {
   if (tier === "tier1_operator") return "AI-native Operator";
   if (tier === "tier2_toolchain") return "Toolchain Integrator";
   return null;
+}
+
+function toLowerHaystack(parts) {
+  return parts
+    .flatMap((part) => (Array.isArray(part) ? part : [part]))
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function heuristicRecommendation(tool, relevance, nextStep) {
+  return {
+    tool,
+    relevance,
+    nextStep,
+    url: resolveRecommendationToolUrl(tool) || undefined,
+  };
+}
+
+function buildHeuristicRecommendations({ assessment = {}, transcript = [], includeContinueInterview = false }) {
+  const toolsUsed = Array.isArray(assessment.toolsUsed)
+    ? assessment.toolsUsed.filter(Boolean)
+    : [];
+  const userTranscript = Array.isArray(transcript)
+    ? transcript
+        .filter((item) => item?.role === "user" && item?.content)
+        .map((item) => String(item.content).trim())
+        .filter(Boolean)
+    : [];
+  const haystack = toLowerHaystack([
+    assessment.personSummary,
+    assessment.referralNotes,
+    assessment.keyInsights,
+    toolsUsed,
+    assessment.preferredAiTool,
+    userTranscript,
+  ]);
+
+  const results = [];
+  const seen = new Set();
+  const add = (rec) => {
+    const key = String(rec?.tool || "").trim().toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    results.push(rec);
+  };
+
+  if (includeContinueInterview) {
+    add({
+      tool: "Continue interview",
+      relevance:
+        "A bit more detail about the workflow and pain points would make the recommendations more precise.",
+      nextStep:
+        "Run another interview and share one concrete example of where the current setup breaks down.",
+    });
+  }
+
+  const mentionsChatgpt =
+    toolsUsed.some((tool) => /chatgpt|openai/i.test(String(tool))) ||
+    /\bchatgpt\b|\bopenai\b/.test(haystack);
+  const mentionsMeetings =
+    /\bmeeting\b|\bcall\b|\bvoice\b|\baudio\b|\btranscri/.test(haystack);
+  const mentionsAutomation =
+    /\bautomation\b|\bintegrat|\bworkflow\b|\bremind|\breminder\b|\brepeated\b|\bhandoff\b/.test(
+      haystack
+    );
+  const mentionsTracking =
+    /\binventory\b|\btrack\b|\btracking\b|\brecord\b|\bconsistent\b|\bspreadsheet\b|\bchecklist\b/.test(
+      haystack
+    );
+  const mentionsResearch =
+    /\bresearch\b|\bcompare\b|\bsearch\b|\blook up\b|\bfind information\b/.test(
+      haystack
+    );
+
+  if (mentionsTracking || mentionsChatgpt) {
+    add(
+      heuristicRecommendation(
+        "ChatGPT",
+        "This sounds like a workflow that would benefit from a repeatable structure instead of starting from scratch each time.",
+        "Set up a dedicated GPT or saved workflow for this recurring task so the fields and prompts stay consistent."
+      )
+    );
+  }
+
+  if (mentionsTracking) {
+    add(
+      heuristicRecommendation(
+        "Notion AI",
+        "A simple shared log can make recurring records easier to update and review than free-form chat alone.",
+        "Create one database for the recurring items to track and use AI to summarize or clean entries."
+      )
+    );
+  }
+
+  if (mentionsAutomation) {
+    add(
+      heuristicRecommendation(
+        "Zapier",
+        "Workflow gaps and missed follow-through often improve when reminders and updates are triggered automatically.",
+        "Automate one reminder or status-update flow first instead of rebuilding everything at once."
+      )
+    );
+  }
+
+  if (mentionsMeetings) {
+    add(
+      heuristicRecommendation(
+        "Otter.ai",
+        "If spoken context matters, transcripts can preserve details that are easy to lose mid-conversation.",
+        "Try it on one conversation or voice memo and see whether the captured action items are reusable."
+      )
+    );
+  }
+
+  if (mentionsResearch || results.length < 2) {
+    add(
+      heuristicRecommendation(
+        "Perplexity",
+        "A second opinion with citations is useful when quick answers need a confidence check.",
+        "Use it alongside the main assistant for one task where source-checking matters."
+      )
+    );
+  }
+
+  if (results.length < 3) {
+    add(
+      heuristicRecommendation(
+        "Claude",
+        "A separate assistant with projects can help keep one ongoing area of work more organized.",
+        "Create one project around this use case and compare whether the responses stay more structured over time."
+      )
+    );
+  }
+
+  return results.slice(0, includeContinueInterview ? 4 : 3);
 }
 
 function normalizeImportedCode(value) {
@@ -454,6 +621,20 @@ contactName, icpTier, icpProfile, matchConfidence, matchedSignals, antiIcpSignal
     assessment.icpTier = repairedTier;
     if (!assessment.icpProfile && repairedTier !== "none") {
       assessment.icpProfile = defaultIcpProfileForTier(repairedTier);
+    }
+    const recommendations = Array.isArray(assessment.recommendations)
+      ? assessment.recommendations
+      : [];
+    const nonContinueRecommendations = recommendations.filter((rec) => {
+      const tool = String(rec?.tool || "").trim().toLowerCase();
+      return tool !== "continue interview" && tool !== "continue the interview";
+    });
+    if (nonContinueRecommendations.length === 0) {
+      assessment.recommendations = buildHeuristicRecommendations({
+        assessment,
+        transcript,
+        includeContinueInterview: true,
+      });
     }
     assessment.sessionId = sessionId;
     assessment.timestamp = new Date().toISOString();
@@ -1046,4 +1227,3 @@ const server = app.listen(3000, () => {
 server.on("error", (error) => {
   console.error("API dev server error:", error);
 });
-

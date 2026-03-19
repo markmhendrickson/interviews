@@ -5,6 +5,7 @@ import {
   resolveRecommendationToolUrl,
 } from "../shared/recommendation_tool_urls";
 import { sanitizeContactIdentityName } from "../shared/contact_identity";
+import { buildHeuristicRecommendations } from "../src/lib/assessment";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -226,16 +227,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (finalRecommendations.length === 0) {
-      finalRecommendations = [
-        {
-          tool: "Continue interview",
-          relevance:
-            "The transcript did not produce enough clear signals for high-confidence tool recommendations.",
-          nextStep:
-            "Run another interview with concrete examples of your current stack, failure modes, and desired outcomes.",
+    const nonContinueRecommendations = finalRecommendations.filter((rec: {
+      tool?: string;
+    }) => {
+      const tool = String(rec.tool || "").trim().toLowerCase();
+      return tool !== "continue interview" && tool !== "continue the interview";
+    });
+
+    if (nonContinueRecommendations.length === 0) {
+      finalRecommendations = buildHeuristicRecommendations({
+        assessment: {
+          icpTier: repairedTier,
+          icpProfile: assessment.icpProfile,
+          personSummary: assessment.personSummary,
+          referralNotes: assessment.referralNotes,
+          keyInsights: assessment.keyInsights,
+          toolsUsed: assessment.toolsUsed,
+          preferredAiTool: assessment.preferredAiTool,
         },
-      ];
+        transcript,
+        includeContinueInterview: true,
+      });
     }
 
     assessment.recommendations = finalRecommendations;

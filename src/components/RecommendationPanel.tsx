@@ -10,7 +10,12 @@ import {
   CalendarDays,
   MessageSquare,
 } from "lucide-react";
-import type { Assessment, Recommendation, ReferralContact } from "../lib/assessment";
+import {
+  buildHeuristicRecommendations,
+  type Assessment,
+  type Recommendation,
+  type ReferralContact,
+} from "../lib/assessment";
 import type { Contact } from "../lib/contacts";
 import NeotomaInstallCard from "./NeotomaInstallCard";
 import type { InterviewConfig } from "../interviews/registry";
@@ -187,6 +192,18 @@ export default function RecommendationPanel({
   const populatedRecommendations = safeRecommendations.filter(
     (r) => r.tool?.trim() || r.relevance?.trim() || r.nextStep?.trim()
   );
+  const nonContinueRecommendations = populatedRecommendations.filter((rec) => {
+    const tool = String(rec.tool || "").trim().toLowerCase();
+    return tool !== "continue interview" && tool !== "continue the interview";
+  });
+  const heuristicRecommendations = buildHeuristicRecommendations({
+    assessment,
+    transcript,
+  });
+  const effectiveRecommendations =
+    nonContinueRecommendations.length > 0
+      ? populatedRecommendations
+      : heuristicRecommendations;
   const neotomaConfidenceThreshold = 70;
   const hasStrongIcpMatchForFallback =
     assessment.icpTier !== "none" &&
@@ -194,7 +211,7 @@ export default function RecommendationPanel({
     safeMatchedSignals.length >= 2 &&
     safeAntiIcpSignals.length === 0;
   const neotomaRec =
-    populatedRecommendations.find(isNeotomaRecommendation) ||
+    effectiveRecommendations.find(isNeotomaRecommendation) ||
     (hasStrongIcpMatchForFallback
       ? {
           tool: "Neotoma",
@@ -208,6 +225,9 @@ export default function RecommendationPanel({
   const otherRecs = populatedRecommendations.filter(
     (r) => !isNeotomaRecommendation(r)
   );
+  const visibleOtherRecs = (
+    effectiveRecommendations.length > 0 ? effectiveRecommendations : otherRecs
+  ).filter((r) => !isNeotomaRecommendation(r));
 
   const transcriptText = transcript
     .filter((m) => m.role === "user")
@@ -341,7 +361,7 @@ export default function RecommendationPanel({
           </div>
         )}
 
-        {(neotomaRec || otherRecs.length > 0) && (
+        {(neotomaRec || visibleOtherRecs.length > 0) && (
           <div className="space-y-4 mb-8">
             <h2 className="text-lg font-semibold text-foreground">
               Recommendations for you
@@ -349,7 +369,7 @@ export default function RecommendationPanel({
 
             {neotomaRec && <NeotomaInstallCard relevance={neotomaRec.relevance} />}
 
-            {otherRecs.map((rec, i) => (
+            {visibleOtherRecs.map((rec, i) => (
               <ToolCard key={i} rec={rec} interviewSlug={interviewConfig.slug} />
             ))}
           </div>

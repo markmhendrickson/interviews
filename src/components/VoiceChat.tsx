@@ -82,9 +82,6 @@ const AGENT_ID_LOOKS_MALFORMED =
     RAW_AGENT_ENV.includes("branchId") ||
     RAW_AGENT_ENV.includes("?"));
 
-const HARD_END_SESSION_TOKEN = "[[END_SESSION]]";
-const RESUME_VERBALIZE_PROMPT_TOKEN = "[[RESUME_VERBALIZE_LAST_AI_TURN]]";
-
 function getReplayAssistantExcerpt(messages: Message[]): string | null {
   const lastAssistantMessage = [...messages]
     .reverse()
@@ -93,10 +90,6 @@ function getReplayAssistantExcerpt(messages: Message[]): string | null {
   const normalized = lastAssistantMessage.replace(/\s+/g, " ").trim();
   if (!normalized) return null;
   return normalized.slice(0, 400);
-}
-
-function buildResumeVerbalizePrompt(replayExcerpt: string): string {
-  return `${RESUME_VERBALIZE_PROMPT_TOKEN} Please say your latest assistant response out loud first. Use this exact response once: "${replayExcerpt}". Then continue naturally from there with one concise follow-up question.`;
 }
 
 function normalizeReplayCompare(value: string): string {
@@ -128,6 +121,19 @@ function isLikelyRestartIntroMessage(message: string): boolean {
   );
 }
 
+function isLikelyClosingHandoffMessage(message: string): boolean {
+  const s = String(message || "").trim().toLowerCase();
+  if (!s) return false;
+  const mentionsConfirmationScreen =
+    s.includes("confirmation screen") ||
+    s.includes("recommendations screen");
+  const soundsLikeWrapUp =
+    /i have everything i need|thanks for sharing|thank you for sharing|it was great talking|great talking to you|have a wonderful day|take care|all set/.test(
+      s
+    );
+  return mentionsConfirmationScreen && soundsLikeWrapUp;
+}
+
 function buildVoiceProsodyGuidance(contact: Contact | null): string {
   const baseRules = [
     "Voice style guidance:",
@@ -148,12 +154,12 @@ function buildVoiceProsodyGuidance(contact: Contact | null): string {
 
 function estimateAutoEndDelayMs(finalAssistantText: string): number {
   const text = String(finalAssistantText || "").trim();
-  if (!text) return 3200;
+  if (!text) return 6000;
   const words = text.split(/\s+/).filter(Boolean).length;
   const punctuationPauses = (text.match(/[,.!?;:]/g) || []).length;
   const estimated =
-    2200 + words * 260 + Math.min(8, punctuationPauses) * 140;
-  return Math.max(3200, Math.min(10000, estimated));
+    3200 + words * 300 + Math.min(10, punctuationPauses) * 180;
+  return Math.max(6000, Math.min(15000, estimated));
 }
 
 export default function VoiceChat({
@@ -210,6 +216,8 @@ export default function VoiceChat({
   const expectedReplayAssistantMessageRef = useRef<string | null>(null);
   const resumeAudioUnmuteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoEndFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingHardEndAfterSpeechRef = useRef(false);
+  const latestConversationModeRef = useRef<string>("connecting");
   const lastIncomingMessageRef = useRef<{
     role: "user" | "assistant";
     content: string;
@@ -429,6 +437,8 @@ export default function VoiceChat({
     isResumeAudioGuardActive.current = false;
     resumeStartedAtRef.current = null;
     expectedReplayAssistantMessageRef.current = null;
+    pendingHardEndAfterSpeechRef.current = false;
+    latestConversationModeRef.current = "connecting";
     clearResumeAudioUnmuteTimer();
     clearAutoEndFallbackTimer();
     connectingSince.current = Date.now();
@@ -527,18 +537,22 @@ export default function VoiceChat({
           },
           onModeChange: ({ mode }: { mode: string }) => {
             if (cancelled) return;
+            latestConversationModeRef.current = mode;
             if (mode === "speaking") setStatus("speaking");
             else if (mode === "listening") setStatus("listening");
             else setStatus("connected");
+            if (
+              pendingHardEndAfterSpeechRef.current &&
+              mode !== "speaking" &&
+              !hasTriggeredAutoEnd.current &&
+              !hasHandledEnd.current
+            ) {
+              pendingHardEndAfterSpeechRef.current = false;
+              finalizeAutoEndAfterSpeech();
+            }
           },
           onMessage: (msg: { source: "user" | "ai"; message: string }) => {
             if (cancelled) return;
-            if (
-              msg.source === "user" &&
-              String(msg.message || "").includes(RESUME_VERBALIZE_PROMPT_TOKEN)
-            ) {
-              return;
-            }
             if (
               shouldResumeFromTranscript &&
               msg.source === "ai" &&
@@ -563,14 +577,7 @@ export default function VoiceChat({
               }
             }
             const rawMessage = String(msg.message || "");
-            const hasHardEndToken =
-              msg.source === "ai" && rawMessage.includes(HARD_END_SESSION_TOKEN);
-            const displayMessage = hasHardEndToken
-              ? rawMessage
-                  .split(HARD_END_SESSION_TOKEN)
-                  .join("")
-                  .trim()
-              : rawMessage;
+            const displayMessage = rawMessage.trim();
             const role = msg.source === "user" ? ("user" as const) : ("assistant" as const);
             const normalizedMessage =
               role === "assistant"
@@ -673,19 +680,29 @@ export default function VoiceChat({
                 return next;
               });
             }
-            if (
+            const shouldAutoEndOnHandoff =
               msg.source === "ai" &&
-              hasHardEndToken &&
+              countUserMessages(messagesRef.current) >= 2 &&
+              isLikelyClosingHandoffMessage(normalizedMessage);
+            if (
+              shouldAutoEndOnHandoff &&
               !hasTriggeredAutoEnd.current &&
               !hasHandledEnd.current
             ) {
+              pendingHardEndAfterSpeechRef.current = true;
               clearAutoEndFallbackTimer();
-              // Estimate playback window from final message length, then end.
+              // Prefer ending when ElevenLabs reports speaking has finished.
+              // Keep a longer timer as a safety net in case the mode transition never arrives.
               const autoEndDelayMs = estimateAutoEndDelayMs(displayMessage);
               autoEndFallbackTimer.current = setTimeout(() => {
                 if (cancelled || isUnmounting.current) return;
+                pendingHardEndAfterSpeechRef.current = false;
                 finalizeAutoEndAfterSpeech();
               }, autoEndDelayMs);
+              if (latestConversationModeRef.current !== "speaking") {
+                pendingHardEndAfterSpeechRef.current = false;
+                finalizeAutoEndAfterSpeech();
+              }
             }
           },
           onError: (message: string) => {
@@ -725,9 +742,12 @@ export default function VoiceChat({
         // Use websocket only. The WebRTC transport has shown repeated
         // compatibility issues in this environment (rtc path / error_type).
         const connectionOrder: Array<"websocket"> = ["websocket"];
-        const authOrder: Array<"signed_url" | "agent_id"> = signedUrl
-          ? ["signed_url", "agent_id"]
-          : ["agent_id"];
+        const authOrder: Array<"signed_url" | "agent_id"> =
+          shouldResumeFromTranscript
+            ? ["agent_id"]
+            : signedUrl
+              ? ["signed_url", "agent_id"]
+              : ["agent_id"];
         let lastError: unknown = null;
         const connectTimeoutMs = 4000;
 
@@ -739,17 +759,27 @@ export default function VoiceChat({
           try {
             const contactSnapshot = contactRef.current;
             const isAnonymous = !contactSnapshot?.name?.trim();
+            const replayExcerpt = shouldResumeFromTranscript
+              ? getReplayAssistantExcerpt(messagesRef.current)
+              : null;
             const dynamicVariables: Record<string, string> = {
               contact_name: contactSnapshot?.name?.trim() || "there",
               contact_context: contactSnapshot?.context?.trim() || "",
             };
-            const overrides = isAnonymous
+            const overrides = shouldResumeFromTranscript
               ? {
                   agent: {
-                    firstMessage: getAnonymousNameFirstMessage(interviewConfig),
+                    firstMessage:
+                      replayExcerpt || "Let's pick up where we left off.",
                   },
                 }
-              : undefined;
+              : isAnonymous
+                ? {
+                    agent: {
+                      firstMessage: getAnonymousNameFirstMessage(interviewConfig),
+                    },
+                  }
+                : undefined;
             // Signed URL config does not allow first_message override; only pass overrides when using agentId.
             const useOverrides = overrides && authMode !== "signed_url";
             const sessionConfig =
@@ -831,12 +861,6 @@ export default function VoiceChat({
                 const replayExcerpt = getReplayAssistantExcerpt(messagesRef.current);
                 if (replayExcerpt) {
                   expectedReplayAssistantMessageRef.current = replayExcerpt;
-                  try {
-                    session.sendUserMessage(buildResumeVerbalizePrompt(replayExcerpt));
-                  } catch {
-                    expectedReplayAssistantMessageRef.current = null;
-                    // ignore resume verbalization failure
-                  }
                 }
                 clearResumeAudioUnmuteTimer();
                 resumeAudioUnmuteTimer.current = setTimeout(() => {
@@ -954,6 +978,8 @@ export default function VoiceChat({
     isResumeAudioGuardActive.current = false;
     resumeStartedAtRef.current = null;
     expectedReplayAssistantMessageRef.current = null;
+    pendingHardEndAfterSpeechRef.current = false;
+    latestConversationModeRef.current = "connecting";
     clearResumeAudioUnmuteTimer();
     clearAutoEndFallbackTimer();
     connectingSince.current = Date.now();
